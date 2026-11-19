@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block back %}<a href="{{ url_for('course_home', cid=c.id) }}">← {{ c.name }}</a>{% endblock %}
+{% block content %}
+<h1>הודעות ומשתתפים</h1>
+{% if g.user.role == 'teacher' %}
+<div class="card">
+  <a class="btn green" href="{{ url_for('attendance_export', cid=c.id) }}">⬇ הורדת גיליון נוכחות</a>
+  <form method="post">
+    <label>הודעה לכיתה</label><textarea name="body" rows="3" required></textarea>
+    <button>פרסום הודעה</button>
+  </form>
+</div>
+{% endif %}
+<div class="card">
+  <h2>הודעות</h2>
+  {% for a in ann %}<div class="msg teacher">{{ a.body }}<br><small>{{ a.ts|dt }}</small></div>
+  {% else %}<p class="muted">אין הודעות.</p>{% endfor %}
+</div>
+<div class="card">
+  <h2>משתתפים ({{ people|length }})</h2>
+  {% for p in people %}<div>{{ p.name }}</div>{% else %}<p class="muted">עדיין אין תלמידים בקורס.</p>{% endfor %}
+</div>
+{% endblock %}

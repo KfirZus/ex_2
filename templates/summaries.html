@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block back %}<a href="{{ url_for('course_home', cid=c.id) }}">← {{ c.name }}</a>{% endblock %}
+{% block content %}
+<h1>סיכום הרצאות</h1>
+{% if g.user.role == 'teacher' %}
+<div class="card">
+  <form method="post" enctype="multipart/form-data">
+    <label>הוספת הקלטה (וידאו/אודיו)</label>
+    <input type="file" name="recording" accept="video/*,audio/*" required>
+    <label>תמלול (אופציונלי: txt / vtt / srt) - משפר את הסיכום</label>
+    <input type="file" name="transcript" accept=".txt,.vtt,.srt">
+    <button class="green">הוספת הקלטה</button>
+  </form>
+</div>
+{% endif %}
+{% for r in recs %}
+<div class="card">
+  <div class="row"><b>הקלטה מתאריך {{ r.uploaded|dt }}</b></div>
+  {% if r.filename.lower().endswith(('.mp3','.wav','.m4a','.ogg')) %}
+    <audio controls style="width:100%" src="{{ url_for('media', name=r.filename) }}"></audio>
+  {% else %}
+    <video controls style="width:100%;border-radius:10px" src="{{ url_for('media', name=r.filename) }}"></video>
+  {% endif %}
+  <button onclick="summarize({{ r.id }})">סיכום הרצאה ע"י AI</button>
+  {% if g.user.role == 'teacher' %}
+  <form method="post" action="{{ url_for('recording_delete', rid=r.id) }}"
+        onsubmit="return confirm('האם את/ה בטוח/ה שתרצה למחוק את ההקלטה?')">
+    <button class="red">מחיקה</button>
+  </form>
+  {% endif %}
+</div>
+{% else %}<div class="card muted">אין הקלטות.</div>{% endfor %}
+
+<div id="modal" class="modal hidden"><div>
+  <h2>סיכום ההרצאה</h2>
+  <pre class="sum" id="sum">מכין סיכום...</pre>
+  <a class="btn green" id="dl" href="#">הורדה</a>
+  <button class="gray" onclick="document.getElementById('modal').classList.add('hidden')">סגירה</button>
+</div></div>
+{% endblock %}
+{% block scripts %}
+<script>
+async function summarize(id){
+  const m = document.getElementById('modal'), s = document.getElementById('sum');
+  s.textContent = 'מכין סיכום...'; m.classList.remove('hidden');
+  const r = await postJSON('/recording/' + id + '/summary');
+  s.textContent = r.ok ? r.data.summary : 'אירעה שגיאה, נסו שוב.';
+  document.getElementById('dl').href = '/recording/' + id + '/summary.txt';
+}
+</script>
+{% endblock %}

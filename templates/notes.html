@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block back %}<a href="{{ url_for('course_home', cid=c.id) }}">← {{ c.name }}</a>{% endblock %}
+{% block content %}
+<h1>הערות על השיעור</h1>
+{% if g.user.role == 'teacher' %}
+<div class="card">
+  <h2>קביעת שיעור</h2>
+  <form method="post">
+    <label>נושא השיעור</label><input name="topic" required>
+    <label>תאריך</label><input name="date" type="date" required>
+    <label>שעת תחילת תגובות</label><input name="start" type="time" value="{{ c.time }}" required>
+    <button class="green">קביעת שיעור</button>
+  </form>
+</div>
+{% endif %}
+{% for l in lessons %}
+  <a class="btn" href="{{ url_for('lesson', lid=l.id) }}">{{ l.topic }}<br><small>{{ l.date }} · {{ l.start }}</small></a>
+{% else %}<div class="card muted">אין שיעורים עדיין.</div>{% endfor %}
+{% endblock %}

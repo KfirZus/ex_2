@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block back %}<a href="{{ url_for('course_home', cid=c.id) }}">← חזרה לקורס</a>{% endblock %}
+{% block content %}
+<div class="card" style="text-align:center">
+  <h1>הוספת אנשים לקורס</h1>
+  <p>התלמידים לוחצים על "להצטרף לקורס" וסורקים את הקוד:</p>
+  <div id="qr" style="display:flex;justify-content:center;margin:16px 0"></div>
+  <p class="muted">או מקלידים את הקוד:</p>
+  <div class="big" style="direction:ltr;letter-spacing:6px">{{ c.code }}</div>
+  <p class="muted" style="direction:ltr;font-size:14px;word-break:break-all">{{ join_url }}</p>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>
+if (window.QRCode) new QRCode(document.getElementById('qr'), {text: {{ join_url|tojson }}, width: 280, height: 280});
+else document.getElementById('qr').textContent = '(לא ניתן לטעון QR - השתמשו בקוד)';
+</script>
+{% endblock %}

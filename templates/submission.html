@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block back %}<a href="{{ url_for('box', bid=b.id) }}">← {{ b.name }}</a>{% endblock %}
+{% block content %}
+<h1>{{ b.name }} · {{ owner }}</h1>
+<span class="badge {{ 'late' if label[1] }}">{{ label[0] }}</span>
+<div class="card">
+  <p><a href="{{ url_for('media', name=s.filename) }}">⬇ {{ s.orig }}</a> · {{ s.ts|dt }}</p>
+  {% if s.text and s.text.strip() %}<pre class="sum">{{ s.text[:6000] }}</pre>{% else %}<p class="muted">אין תצוגה מקדימה של הקובץ.</p>{% endif %}
+</div>
+<div id="modal" class="modal hidden"><div>
+  <h2>סקירה מעמיקה</h2>
+  <pre class="sum" id="rev">מנתח...</pre>
+  <button class="gray" onclick="document.getElementById('modal').classList.add('hidden')">סגירה</button>
+</div></div>
+<div class="sticky-bottom"><button id="rbtn">AI סקירה מעמיקה ע"י</button></div>
+{% endblock %}
+{% block scripts %}
+<script>
+document.getElementById('rbtn').onclick = async () => {
+  const m = document.getElementById('modal'), p = document.getElementById('rev');
+  p.textContent = 'מנתח...'; m.classList.remove('hidden');
+  const r = await postJSON('{{ url_for("submission_review", sid=s.id) }}');
+  p.textContent = r.ok ? r.data.review : 'אירעה שגיאה, נסו שוב.';
+};
+</script>
+{% endblock %}

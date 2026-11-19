@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block back %}<a href="{{ url_for('courses') }}">← חזרה</a>{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>יצירת קורס קבוע</h1>
+  <form method="post">
+    <label>שם הקורס</label><input name="name" required autofocus>
+    <label>יום הקורס</label>
+    <select name="day">
+      {% for d in ['ראשון','שני','שלישי','רביעי','חמישי','שישי','שבת'] %}<option>{{ d }}</option>{% endfor %}
+    </select>
+    <label>שעת הקורס</label><input name="time" type="time" value="10:00" required>
+    <button type="submit">יצירת קורס</button>
+  </form>
+</div>
+{% endblock %}

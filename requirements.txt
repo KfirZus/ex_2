@@ -1,0 +1,3 @@
+flask>=3.0
+opencv-python-headless  # optional, not required by the current code
+cryptography  # optional: only for HTTPS=1

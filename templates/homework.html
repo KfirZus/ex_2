@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block back %}<a href="{{ url_for('course_home', cid=c.id) }}">← {{ c.name }}</a>{% endblock %}
+{% block content %}
+<h1>בדיקת שיעורי בית</h1>
+{% if g.user.role == 'teacher' %}
+<div class="card">
+  <h2>הוספת תיבת הגשה</h2>
+  <form method="post">
+    <label>שם המטלה</label><input name="name" placeholder="מטלה 1" required>
+    <label>מועד הגשה</label><input name="due" type="datetime-local" required>
+    <button class="green">הוספת תיבת הגשה</button>
+  </form>
+</div>
+{% endif %}
+{% for b in boxes %}
+  <a class="btn" href="{{ url_for('box', bid=b.id) }}">{{ b.name }}<br><small>להגשה עד {{ b.due|dt }}</small></a>
+{% else %}<div class="card muted">אין תיבות הגשה.</div>{% endfor %}
+{% endblock %}

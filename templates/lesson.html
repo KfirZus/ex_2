@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block back %}<a href="{{ url_for('notes', cid=c.id) }}">← כל השיעורים</a>{% endblock %}
+{% block content %}
+<h1>{{ l.topic }}</h1>
+<p class="muted">{{ l.date }} · תגובות מתחילות בשעה {{ l.start }}</p>
+<div class="card feed" id="feed"></div>
+{% if open %}
+<div class="card">
+  {% if g.user.role == 'student' %}
+  <label>להגיב בשם</label>
+  <select id="ident"><option value="">{{ g.user.name }}</option><option value="anon">student</option></select>
+  {% endif %}
+  <textarea id="body" maxlength="200" rows="3" placeholder="כתבו תגובה (עד 200 תווים)"></textarea>
+  <div class="muted" id="cnt">0/200</div>
+  <button id="send">שליחה</button>
+</div>
+{% else %}
+<div class="card flash error">אפשר להגיב רק החל מהשעה {{ l.start }} בתאריך {{ l.date }}.</div>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+<script>
+const URL_C = '{{ url_for("lesson_comments", lid=l.id) }}';
+async function load(){
+  const list = await (await fetch(URL_C)).json();
+  const feed = document.getElementById('feed');
+  const atBottom = feed.scrollTop + feed.clientHeight >= feed.scrollHeight - 40;
+  feed.replaceChildren();
+  if (!list.length) { feed.textContent = 'עדיין אין תגובות.'; feed.className = 'card feed muted'; return; }
+  feed.className = 'card feed';
+  for (const m of list) {
+    const d = document.createElement('div'); d.className = 'msg' + (m.teacher ? ' teacher' : '');
+    const b = document.createElement('b'); b.textContent = m.label + (m.teacher ? ' (מורה)' : '');
+    const t = document.createElement('small'); t.textContent = ' · ' + m.time;
+    const p = document.createElement('div'); p.textContent = m.body;
+    d.append(b, t, p); feed.append(d);
+  }
+  if (atBottom) feed.scrollTop = feed.scrollHeight;
+}
+load(); setInterval(load, 3000);
+const body = document.getElementById('body');
+if (body) {
+  body.oninput = () => document.getElementById('cnt').textContent = body.value.length + '/200';
+  document.getElementById('send').onclick = async () => {
+    const txt = body.value.trim(); if (!txt) return;
+    const ident = document.getElementById('ident');
+    const r = await postJSON(URL_C, {body: txt, anon: ident ? ident.value === 'anon' : false});
+    if (r.ok) { body.value = ''; body.oninput(); load(); }
+  };
+}
+</script>
+{% endblock %}

@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block back %}<a href="{{ url_for('polls', cid=c.id) }}">← חזרה לסקרים</a>{% endblock %}
+{% block content %}
+<h1>{{ p.title }}</h1>
+<div class="card">
+  <div id="meta" class="muted"></div>
+  <div class="timer" id="timer"></div>
+  <h2 id="question" style="text-align:center"></h2>
+  <div id="options"></div>
+  <p id="info" class="muted" style="text-align:center"></p>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const RID = {{ r.id }}, TEACHER = {{ 'true' if g.user.role == 'teacher' else 'false' }};
+const $ = id => document.getElementById(id);
+let busy = false;
+async function answer(i){
+  if (busy) return; busy = true;
+  await postJSON('/poll-run/' + RID + '/answer', {opt: i});
+  busy = false; tick();
+}
+function render(s){
+  $('options').replaceChildren(); $('question').textContent = ''; $('timer').textContent = ''; $('info').textContent = '';
+  if (s.waiting) { $('info').textContent = 'הסקר מתחיל מיד...'; return; }
+  if (s.finished) {
+    $('question').textContent = 'הסקר הסתיים 🎉';
+    const a = document.createElement('a'); a.className = 'btn'; a.href = '{{ url_for("poll_review", pid=p.id) }}';
+    a.textContent = 'צפייה בתשובות ובסטטיסטיקה'; $('options').append(a); clearInterval(timer); return;
+  }
+  $('meta').textContent = 'שאלה ' + (s.idx + 1) + ' מתוך ' + s.total;
+  $('timer').textContent = s.remaining;
+  $('question').textContent = s.question;
+  s.options.forEach((txt, i) => {
+    const b = document.createElement('button'); b.className = 'opt';
+    b.append(document.createTextNode(txt));
+    if (s.mine === i) b.classList.add('mine');
+    if (s.phase === 'reveal') {
+      if (s.correct === i) b.classList.add('correct');
+      const c = document.createElement('span'); c.className = 'cnt'; c.textContent = s.counts[i] + ' בחרו'; b.append(c);
+      b.disabled = true; b.style.opacity = 1;
+    } else if (TEACHER) {
+      b.disabled = true; b.style.opacity = 1;
+    } else b.onclick = () => answer(i);
+    $('options').append(b);
+  });
+  $('info').textContent = s.phase === 'answer' ? (TEACHER ? 'התלמידים עונים...' : 'בחרו תשובה (אפשר לשנות עד סוף הזמן)') : 'התשובה הנכונה מסומנת בירוק';
+}
+async function tick(){ render(await (await fetch('/poll-run/' + RID + '/state')).json()); }
+const timer = setInterval(tick, 700); tick();
+</script>
+{% endblock %}

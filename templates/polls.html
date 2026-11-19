@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block back %}<a href="{{ url_for('course_home', cid=c.id) }}">← {{ c.name }}</a>{% endblock %}
+{% block content %}
+<h1>סקר על החומר הנלמד</h1>
+{% if live %}
+  <a class="btn green" href="{{ url_for('poll_live', rid=live.id) }}">📢 יש סקר פעיל - הצטרפו עכשיו</a>
+{% endif %}
+{% if g.user.role == 'teacher' %}
+  <a class="btn" href="{{ url_for('poll_new', cid=c.id) }}">＋ יצירת סקר</a>
+{% endif %}
+{% for p in polls %}
+<div class="card">
+  <div class="row">
+    <b>{{ p.title }}</b>
+    <span class="muted">{{ counts[p.id] }} שאלות</span>
+    {% if g.user.role == 'teacher' %}
+    <form method="post" action="{{ url_for('poll_delete', cid=c.id, pid=p.id) }}"
+          onsubmit="return confirm('האם ברצונך למחוק את הסקר?')">
+      <button class="red small" title="מחיקה">✕</button>
+    </form>
+    {% endif %}
+  </div>
+  {% if g.user.role == 'teacher' %}
+  <form method="post" action="{{ url_for('poll_start', cid=c.id, pid=p.id) }}"><button class="green">התחל סקר</button></form>
+  {% endif %}
+  <a class="btn gray" href="{{ url_for('poll_review', pid=p.id) }}">צפייה בסקר ובתוצאות</a>
+</div>
+{% else %}<div class="card muted">אין סקרים שמורים.</div>{% endfor %}
+{% endblock %}

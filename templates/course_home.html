@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block back %}<a href="{{ url_for('courses') }}">← הקורסים שלי</a>{% endblock %}
+{% block content %}
+<h1>{{ c.name }}</h1>
+<p class="muted">יום {{ c.day }} · {{ c.time }}</p>
+{% if g.user.role == 'teacher' %}
+  <a class="btn green" href="{{ url_for('add_people', cid=c.id) }}">הוספת אנשים לקורס</a>
+{% endif %}
+<div class="grid">
+  <a class="btn tab" href="{{ url_for('attendance', cid=c.id) }}"><span class="ic">✅</span>בדיקת נוכחות</a>
+  <a class="btn tab" href="{{ url_for('notes', cid=c.id) }}"><span class="ic">💬</span>הערות על השיעור</a>
+  <a class="btn tab" href="{{ url_for('polls', cid=c.id) }}"><span class="ic">📊</span>סקר על החומר הנלמד</a>
+  <a class="btn tab" href="{{ url_for('summaries', cid=c.id) }}"><span class="ic">🎬</span>סיכום הרצאות</a>
+  <a class="btn tab" href="{{ url_for('homework', cid=c.id) }}"><span class="ic">📝</span>בדיקת שיעורי בית</a>
+  <a class="btn tab" href="{{ url_for('more', cid=c.id) }}"><span class="ic">📌</span>הודעות ומשתתפים</a>
+</div>
+{% endblock %}

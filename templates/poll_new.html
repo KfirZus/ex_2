@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block back %}<a href="{{ url_for('polls', cid=c.id) }}">← חזרה</a>{% endblock %}
+{% block content %}
+<h1>יצירת סקר</h1>
+<div class="card">
+  <label>שם הסקר</label><input id="title" placeholder="לדוגמה: חזרה על פרק 3">
+  <div id="qs"></div>
+  <button class="gray" onclick="addQ()">＋ הוספת שאלה</button>
+  <p id="err" class="flash error hidden"></p>
+  <button class="green" onclick="save()">שמירת הסקר</button>
+  <p class="muted">עד 4 תשובות לכל שאלה. סמנו ב-✔ את התשובה הנכונה.</p>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const Q = [];
+function newQ(){ return {text:'', options:[{text:'',correct:true},{text:'',correct:false}]}; }
+function render(){
+  const root = document.getElementById('qs'); root.replaceChildren();
+  Q.forEach((q, qi) => {
+    const box = document.createElement('div'); box.className = 'qbox';
+    const t = document.createElement('input'); t.placeholder = 'טקסט השאלה ' + (qi+1); t.value = q.text;
+    t.oninput = () => q.text = t.value; box.append(t);
+    q.options.forEach((o, oi) => {
+      const row = document.createElement('div'); row.className = 'ansrow';
+      const tick = document.createElement('button'); tick.type = 'button'; tick.textContent = '✔';
+      tick.className = 'tick' + (o.correct ? ' on' : '');
+      tick.onclick = () => { q.options.forEach(x => x.correct = false); o.correct = true; render(); };
+      const inp = document.createElement('input'); inp.type = 'text'; inp.placeholder = 'תשובה ' + (oi+1); inp.value = o.text;
+      inp.oninput = () => o.text = inp.value;
+      row.append(tick, inp); box.append(row);
+    });
+    if (q.options.length < 4) {
+      const add = document.createElement('button'); add.type = 'button'; add.className = 'small gray'; add.textContent = '＋ תשובה';
+      add.onclick = () => { q.options.push({text:'',correct:false}); render(); }; box.append(add);
+    }
+    if (Q.length > 1) {
+      const del = document.createElement('button'); del.type = 'button'; del.className = 'small red'; del.textContent = 'הסרת שאלה';
+      del.onclick = () => { Q.splice(qi,1); render(); }; box.append(del);
+    }
+    root.append(box);
+  });
+}
+function addQ(){ Q.push(newQ()); render(); }
+async function save(){
+  const r = await postJSON('{{ url_for("poll_save", cid=c.id) }}', {title: document.getElementById('title').value, questions: Q});
+  if (r.ok && r.data.ok) location.href = r.data.url;
+  else { const e = document.getElementById('err'); e.textContent = (r.data && r.data.error) || 'שגיאה בשמירה'; e.classList.remove('hidden'); }
+}
+addQ();
+</script>
+{% endblock %}

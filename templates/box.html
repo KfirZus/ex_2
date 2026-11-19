@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block back %}<a href="{{ url_for('homework', cid=c.id) }}">← תיבות הגשה</a>{% endblock %}
+{% block content %}
+<h1>{{ b.name }}</h1>
+<div class="card">
+  <p>מועד הגשה: <b>{{ b.due|dt }}</b></p>
+  {% if g.user.role == 'teacher' %}
+  <form method="post">
+    <input name="due" type="datetime-local" value="{{ due_input }}" required>
+    <button class="gray">שינוי</button>
+  </form>
+  {% else %}
+  <form method="post" enctype="multipart/form-data">
+    <label>העבודה שלי</label>
+    <input type="file" name="work" required>
+    <button class="green">הגשה</button>
+  </form>
+  {% endif %}
+</div>
+{% for it in items %}
+  <a class="btn gray" href="{{ url_for('submission', sid=it.s.id) }}" style="text-align:right">
+    <span class="badge {{ 'late' if it.label[1] }}">{{ it.label[0] }}</span><br>
+    {% if g.user.role == 'teacher' %}{{ it.s.name }} · {% endif %}{{ it.s.orig }} · {{ it.s.ts|dt }}
+  </a>
+{% else %}<div class="card muted">{{ 'עדיין לא הוגשו עבודות.' if g.user.role == 'teacher' else 'עדיין לא הגשת עבודה.' }}</div>{% endfor %}
+{% endblock %}

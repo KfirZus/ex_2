@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}כיתה חכמה{% endblock %}</title>
+<link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
+<meta name="theme-color" content="#1a5fb4">
+<link rel="icon" href="{{ url_for('static', filename='icon.svg') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header>
+  <a class="brand" href="{{ url_for('index') }}">🎓 כיתה חכמה</a>
+  {% if g.user %}
+  <span>{{ g.user.name }} · {{ 'מורה' if g.user.role == 'teacher' else 'תלמיד' }}
+    · <a href="{{ url_for('logout') }}">יציאה</a></span>
+  {% endif %}
+</header>
+<main>
+  {% with msgs = get_flashed_messages(with_categories=true) %}
+    {% for cat, m in msgs %}<div class="flash {{ cat }}">{{ m }}</div>{% endfor %}
+  {% endwith %}
+  {% block back %}{% endblock %}
+  {% block content %}{% endblock %}
+</main>
+<script>
+async function postJSON(url, body){
+  const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body||{})});
+  let data = null; try { data = await r.json(); } catch(e) {}
+  return {ok: r.ok, data};
+}
+function pad(n){return String(n).padStart(2,'0')}
+function mmss(s){s=Math.max(0,s);return pad(Math.floor(s/60))+':'+pad(s%60)}
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

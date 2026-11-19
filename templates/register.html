@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h1>הרשמה</h1>
+  <form method="post">
+    <label>שם מלא</label><input name="name" required>
+    <label>שם משתמש</label><input name="username" autocomplete="username" required>
+    <label>סיסמה</label><input name="password" type="password" autocomplete="new-password" required>
+    <label>אני</label>
+    <select name="role" id="role" onchange="document.getElementById('tc').classList.toggle('hidden', this.value!=='teacher')">
+      <option value="student">תלמיד/ה</option>
+      <option value="teacher">מורה</option>
+    </select>
+    <div id="tc" class="hidden"><label>קוד מורה</label><input name="teacher_code" type="password"></div>
+    <button type="submit">הרשמה</button>
+  </form>
+  <a class="btn gray" href="{{ url_for('login') }}">כבר יש לי משתמש</a>
+</div>
+{% endblock %}

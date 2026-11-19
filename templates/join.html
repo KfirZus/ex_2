@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block back %}<a href="{{ url_for('courses') }}">← חזרה</a>{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>להצטרף לקורס</h1>
+  <p>כוונו את המצלמה אל קוד ה-QR של המורה.</p>
+  <div id="reader" style="width:100%"></div>
+  <p class="muted" id="cammsg"></p>
+  <label class="btn gray" style="margin:10px 0">📷 צילום קוד QR
+    <input id="qrfile" type="file" accept="image/*" capture="environment" class="hidden">
+  </label>
+  <hr>
+  <form method="post">
+    <label>או הקלידו את קוד הקורס</label>
+    <input name="code" maxlength="10" style="text-transform:uppercase;direction:ltr;text-align:center;font-size:30px">
+    <button type="submit">הצטרפות</button>
+  </form>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script>
+function go(text){
+  let code = text.trim();
+  try { const u = new URL(code); code = u.searchParams.get('code') || code; } catch(e) {}
+  location.href = '{{ url_for("join") }}?code=' + encodeURIComponent(code);
+}
+if (window.Html5Qrcode) {
+  const scanner = new Html5Qrcode('reader');
+  scanner.start({facingMode:'environment'}, {fps:10, qrbox:250}, t => { scanner.stop().catch(()=>{}); go(t); })
+    .catch(() => { document.getElementById('cammsg').textContent = 'לא ניתן לפתוח מצלמה חיה (נדרש חיבור מאובטח). אפשר לצלם את הקוד או להקליד אותו.'; });
+  document.getElementById('qrfile').addEventListener('change', async e => {
+    const f = e.target.files[0]; if (!f) return;
+    try { const r = await scanner.scanFile(f, false); go(r); }
+    catch(err) { document.getElementById('cammsg').textContent = 'לא זוהה קוד QR בתמונה, נסו שוב.'; }
+  });
+} else {
+  document.getElementById('cammsg').textContent = 'סורק QR לא נטען - הקלידו את קוד הקורס.';
+}
+</script>
+{% endblock %}

@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block back %}<a href="{{ url_for('course_home', cid=c.id) }}">← {{ c.name }}</a>{% endblock %}
+{% block content %}
+<h1>בדיקת נוכחות</h1>
+
+<div class="card">
+  <div class="timer" id="timer">{{ '10:00' if not active else '' }}</div>
+  <p class="big" id="live" style="font-size:24px"></p>
+  <form method="post" action="{{ url_for('attendance_start', cid=c.id) }}">
+    <button class="green" id="startbtn" {{ 'disabled' if active }}>התחלת בדיקת נוכחות ☑</button>
+  </form>
+  <p class="muted">הטיימר נמשך 10 דקות. בסיומו הנוכחות ננעלת ולא ניתן לשנותה.</p>
+</div>
+
+<div class="card">
+  <form method="post" action="{{ url_for('attendance_photo', cid=c.id) }}" enctype="multipart/form-data">
+    <label class="btn" style="margin:0">📷 צילום נוכחות
+      <input type="file" name="photo" accept="image/*" capture="environment" class="hidden" onchange="this.form.submit()">
+    </label>
+  </form>
+  <button class="gray" onclick="document.getElementById('photos').classList.toggle('hidden')">תמונות נוכחות ({{ photos|length }})</button>
+  <div id="photos" class="hidden">
+    {% for p in photos %}
+    <div class="card photo">
+      <img src="{{ url_for('media', name=p.filename) }}" alt="תמונת נוכחות">
+      <p>{{ p.taken|dt }}</p>
+      <p><b>כמות תלמידים לפי תמונה:</b> {{ p.ai_count if p.ai_count is not none else 'לא זמין (נדרש מפתח AI)' }}</p>
+      <p><b>כמות תלמידים שנרשמו בנוכחות:</b> {{ p.registered }}</p>
+      <form method="post" action="{{ url_for('photo_delete', cid=c.id, pid=p.id) }}" onsubmit="return confirm('למחוק את התמונה?')">
+        <button class="red small">מחיקה</button>
+      </form>
+    </div>
+    {% else %}<p class="muted">אין תמונות.</p>{% endfor %}
+  </div>
+</div>
+
+<div class="card">
+  <h2>היסטוריית בדיקות</h2>
+  <table>
+    <tr><th>תאריך</th><th>נוכחים</th></tr>
+    {% for s in sessions %}<tr><td>{{ s.started|dt }}</td><td>{{ s.cnt }}</td></tr>
+    {% else %}<tr><td colspan="2" class="muted">עדיין לא בוצעה בדיקה.</td></tr>{% endfor %}
+  </table>
+  <a class="btn green" href="{{ url_for('attendance_export', cid=c.id) }}">⬇ הורדת גיליון נוכחות (Excel / Sheets)</a>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+let left = 0;
+async function poll(){
+  const s = await (await fetch('{{ url_for("attendance_status", cid=c.id) }}')).json();
+  const was = left > 0; left = s.remaining;
+  document.getElementById('live').textContent = s.active ? 'נרשמו עד כה: ' + s.count : '';
+  if (was && !s.active) location.reload();
+}
+setInterval(()=>{ if(left>0){left--; document.getElementById('timer').textContent = mmss(left);} }, 1000);
+setInterval(poll, 3000); poll();
+</script>
+{% endblock %}

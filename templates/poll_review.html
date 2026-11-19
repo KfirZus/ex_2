@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block back %}<a href="{{ url_for('polls', cid=c.id) }}">← חזרה לסקרים</a>{% endblock %}
+{% block content %}
+<h1>{{ p.title }}</h1>
+<div class="card">
+  <div class="row">
+    <button class="small" id="next" title="הבאה">◀</button>
+    <span id="pos" class="muted"></span>
+    <button class="small" id="prev" title="קודמת">▶</button>
+  </div>
+  <h2 id="q"></h2>
+  <div id="opts"></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const D = {{ data|tojson }};
+let i = 0;
+function show(){
+  const q = D[i]; document.getElementById('pos').textContent = 'שאלה ' + (i+1) + ' מתוך ' + D.length;
+  document.getElementById('q').textContent = q.text;
+  const root = document.getElementById('opts'); root.replaceChildren();
+  const total = q.counts.reduce((a,b)=>a+b,0);
+  q.options.forEach((t, k) => {
+    const b = document.createElement('button'); b.className = 'opt'; b.disabled = true; b.style.opacity = 1;
+    if (q.correct === k) b.classList.add('correct');
+    if (q.mine === k) b.classList.add('mine');
+    b.append(document.createTextNode(t + (q.mine === k ? '  (התשובה שלך)' : '')));
+    const c = document.createElement('span'); c.className = 'cnt';
+    c.textContent = q.counts[k] + ' בחרו' + (total ? ' (' + Math.round(100*q.counts[k]/total) + '%)' : ''); b.append(c);
+    root.append(b);
+  });
+  document.getElementById('prev').disabled = i === 0;
+  document.getElementById('next').disabled = i === D.length - 1;
+}
+document.getElementById('prev').onclick = () => { if (i > 0) { i--; show(); } };
+document.getElementById('next').onclick = () => { if (i < D.length-1) { i++; show(); } };
+show();
+</script>
+{% endblock %}

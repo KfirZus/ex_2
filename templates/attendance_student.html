@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block back %}<a href="{{ url_for('course_home', cid=c.id) }}">← {{ c.name }}</a>{% endblock %}
+{% block content %}
+<h1>בדיקת נוכחות</h1>
+
+<div class="card">
+  <div class="timer" id="timer"></div>
+  <p class="big" id="status" style="font-size:24px">{{ 'בדיקת נוכחות פעילה' if active else 'אין כרגע בדיקת נוכחות' }}</p>
+  <button class="green" id="checkin">אני נוכח/ת ✔</button>
+  <p id="done" class="flash ok {{ '' if checked else 'hidden' }}">הנוכחות שלך נרשמה ✔</p>
+</div>
+
+<button class="gray" onclick="toggle('att')">נוכחות</button>
+<div id="att" class="card hidden">
+  {% for s, present in history %}
+    <p>{% if present %}היית נוכח בתאריך {{ s.started|dt('%d/%m/%Y') }} בשעה {{ s.started|dt('%H:%M') }}
+       {% else %}לא היית נוכח בתאריך {{ s.started|dt('%d/%m/%Y') }} בשעה {{ s.started|dt('%H:%M') }}{% endif %}</p>
+  {% else %}<p class="muted">עדיין אין נתוני נוכחות.</p>{% endfor %}
+</div>
+
+<button class="gray" onclick="toggle('pics')">תמונות כיתה</button>
+<div id="pics" class="hidden">
+  {% for p in photos %}
+  <div class="card photo"><img src="{{ url_for('media', name=p.filename) }}" alt="תמונת כיתה"><p>{{ p.taken|dt }}</p></div>
+  {% else %}<div class="card muted">אין תמונות.</div>{% endfor %}
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function toggle(id){document.getElementById(id).classList.toggle('hidden')}
+let left = 0;
+async function poll(){
+  const s = await (await fetch('{{ url_for("attendance_status", cid=c.id) }}')).json();
+  left = s.remaining;
+  document.getElementById('status').textContent = s.active ? 'בדיקת נוכחות פעילה' : 'אין כרגע בדיקת נוכחות';
+  if (!s.active) document.getElementById('timer').textContent = '';
+}
+setInterval(()=>{ if(left>0){left--; document.getElementById('timer').textContent = mmss(left);} }, 1000);
+setInterval(poll, 3000); poll();
+// Per the SRS: outside the Wi-Fi network / timer window the press does nothing.
+document.getElementById('checkin').onclick = async () => {
+  const r = await postJSON('{{ url_for("attendance_checkin", cid=c.id) }}');
+  if (r.data && r.data.ok) { document.getElementById('done').classList.remove('hidden'); setTimeout(()=>location.reload(), 1200); }
+};
+</script>
+{% endblock %}

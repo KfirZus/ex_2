@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h1>כניסה</h1>
+  <form method="post">
+    <label>שם משתמש</label><input name="username" autocomplete="username" required autofocus>
+    <label>סיסמה</label><input name="password" type="password" autocomplete="current-password" required>
+    <button type="submit">כניסה</button>
+  </form>
+  <a class="btn gray" href="{{ url_for('register') }}">אין לי משתמש - הרשמה</a>
+</div>
+{% endblock %}
