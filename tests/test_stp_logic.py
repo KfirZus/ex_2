@@ -49,7 +49,7 @@ class Attendance(Fixture):
         lines = r.get_data(as_text=True).lstrip("﻿").splitlines()
         self.assertEqual(lines[0], 'שם,שם משתמש,"סה""כ נוכחות",אחוז')
         self.assertTrue(all(l.endswith(",0,0%") for l in lines[1:]))
-        empty = self.new_course(self.t, "ריק")
+        empty = self.new_course(self.t, "ריק", day="שני")
         r = self.t.get(self.att("/export.csv", cid=empty))
         self.assertEqual(r.status_code, 200)
         self.assertEqual(len(r.get_data(as_text=True).splitlines()), 1)

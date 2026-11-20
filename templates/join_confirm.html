@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block back %}<a href="{{ url_for('courses') }}">← הקורסים שלי</a>{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>רישום לקורס בשעות חופפות</h1>
+  <p>ביקשת להירשם לקורס <b>{{ c.name }}</b>, שמתקיים ביום {{ c.day }}
+    בשעות <bdi dir="ltr" class="nowrap">{{ hhmm(span[0]) }}–{{ hhmm(span[1]) }}</bdi>.</p>
+  <div class="flash error">
+    כבר נרשמת לקורס אחר באותן שעות:
+    {% for o in clashes %}
+      <div><b>{{ o.name }}</b> · יום {{ o.day }} ·
+        <bdi dir="ltr" class="nowrap">{{ o.time }}{% if o.end_time %}–{{ o.end_time }}{% endif %}</bdi></div>
+    {% endfor %}
+  </div>
+  <p><b>האם את/ה בטוח/ה שברצונך להירשם?</b></p>
+  <form method="post" action="{{ url_for('join') }}">
+    <input type="hidden" name="code" value="{{ c.code }}">
+    <input type="hidden" name="confirm" value="1">
+    <button class="green">כן, להירשם</button>
+  </form>
+  <a class="btn gray" href="{{ url_for('courses') }}">לא</a>
+</div>
+{% endblock %}

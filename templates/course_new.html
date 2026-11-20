@@ -5,12 +5,13 @@
 <div class="card">
   <h1>יצירת קורס קבוע</h1>
   <form method="post">
-    <label>שם הקורס</label><input name="name" required autofocus>
+    <label>שם הקורס</label><input name="name" value="{{ form.name }}" required autofocus>
     <label>יום הקורס</label>
     <select name="day">
-      {% for d in ['ראשון','שני','שלישי','רביעי','חמישי','שישי','שבת'] %}<option>{{ d }}</option>{% endfor %}
+      {% for d in days %}<option{{ ' selected' if d == form.day }}>{{ d }}</option>{% endfor %}
     </select>
-    <label>שעת הקורס</label>{{ time24('time', '10:00') }}
+    <label>שעת התחלה</label>{{ time24('time', form.time) }}
+    <label>שעת סיום</label>{{ time24('end_time', form.end_time) }}
     <button type="submit">יצירת קורס</button>
   </form>
 </div>

@@ -2,7 +2,7 @@
 {% block content %}
 <h1>הקורסים שלי</h1>
 {% for c in courses %}
-  <a class="btn" href="{{ url_for('course_home', cid=c.id) }}">{{ c.name }}<br><small>יום {{ c.day }} · {{ c.time }}</small></a>
+  <a class="btn" href="{{ url_for('course_home', cid=c.id) }}">{{ c.name }}<br><small>יום {{ c.day }} · <bdi dir="ltr">{{ c.time }}{% if c.end_time %}–{{ c.end_time }}{% endif %}</bdi></small></a>
 {% else %}
   <div class="card muted">אין קורסים עדיין.</div>
 {% endfor %}
