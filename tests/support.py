@@ -140,9 +140,23 @@ class Fixture(unittest.TestCase):
         sql("UPDATE runs SET started=? WHERE id=?", time.time() - elapsed, rid)
         return (client or self.s1).get("/poll-run/%d/state" % rid).get_json()
 
-    def new_box(self, name="מטלה 1", due="2099-01-01T10:00"):
+    def new_lesson(self, topic="בדיקה", cid=None, past=True):
+        """Lessons can only be scheduled in the future; `past` then moves the start into the
+        past so comments are already open."""
+        self.t.post("/course/%d/notes" % (cid or self.cid),
+                    data=dict(topic=topic, date="2099-01-01", start="09:00"))
+        lid = one("SELECT MAX(id) FROM lessons")[0]
+        if past:
+            sql("UPDATE lessons SET date='2000-01-01' WHERE id=?", lid)
+        return lid
+
+    def new_box(self, name="מטלה 1", due="2099-01-01T10:00", past=False):
+        """Deadlines can only be set in the future; `past` moves it 2 hours into the past."""
         self.t.post("/course/%d/homework" % self.cid, data=dict(name=name, due=due))
-        return one("SELECT MAX(id) FROM boxes")[0]
+        bid = one("SELECT MAX(id) FROM boxes")[0]
+        if past:
+            sql("UPDATE boxes SET due=? WHERE id=?", time.time() - 7200, bid)
+        return bid
 
     def submit(self, client, bid, content, name="w.txt"):
         return client.post("/box/%d" % bid, data={"work": text_file(content, name)},

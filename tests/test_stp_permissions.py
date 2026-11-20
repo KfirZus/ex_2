@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import unittest
+from urllib.parse import urlsplit
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from support import OFF_WIFI, ROOT, Fixture, count, jpeg, m, one, text_file  # noqa: E402
@@ -20,7 +21,7 @@ class Baseline(Fixture):
 
     def setUp(self):
         super().setUp()
-        self.t.post("/course/%d/notes" % self.cid, data=dict(topic="בדיקה", date="2000-01-01", start="09:00"))
+        self.lid = self.new_lesson("בדיקה")
         self.save_poll(Q1)
         self.rid = self.start_poll(one("SELECT id FROM polls")[0])
         self.bid = self.new_box()
@@ -30,7 +31,6 @@ class Baseline(Fixture):
             self.submit(c, self.bid, "homework text number %d about trees" % i)
         self.sub = {i + 1: one("SELECT id, filename FROM submissions WHERE user_id=?",
                                self.uid("student%d" % (i + 1))) for i in range(3)}
-        self.lid = one("SELECT id FROM lessons")[0]
         self.pid = one("SELECT id FROM polls")[0]
         self.rec = one("SELECT id FROM recordings")[0]
         self.t2 = self.register("teacher2", "מורה 2", "teacher", m.TEACHER_CODE)
@@ -50,7 +50,7 @@ class Anonymous(Baseline):
         for p in paths:
             r = c.get(p)
             self.assertEqual(r.status_code, 302, p)
-            self.assertTrue(r.headers["Location"].endswith("/login"), p)
+            self.assertEqual(urlsplit(r.headers["Location"]).path, "/login", p)
         for p in ("/login", "/register", "/static/style.css", "/sw.js"):
             self.assertEqual(c.get(p).status_code, 200, p)
 
@@ -167,7 +167,7 @@ class Injection(Baseline):
     def test_P12_markup_is_escaped_everywhere(self):
         x = self.XSS
         cid = self.new_course(self.t, x)
-        self.t.post("/course/%d/notes" % cid, data=dict(topic=x, date="2000-01-01", start="09:00"))
+        self.new_lesson(x, cid=cid)
         self.t.post("/course/%d/more" % cid, data=dict(body=x))
         self.save_poll([{"text": x, "options": [{"text": x}, {"text": "b"}]}], title=x, cid=cid)
         self.register("evil", x).post("/join", data={"code": one("SELECT code FROM courses WHERE id=?", cid)[0]})

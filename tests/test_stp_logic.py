@@ -57,9 +57,8 @@ class Attendance(Fixture):
 
 class Notes(Fixture):
     def test_L14_special_chars_kept_as_text(self):
-        self.t.post("/course/%d/notes" % self.cid, data=dict(topic="T", date="2000-01-01", start="09:00"))
-        lid = one("SELECT id FROM lessons")[0]
-        body = "<img src=x onerror=alert(1)> & שלום 😀"
+        lid = self.new_lesson("T")
+        body ="<img src=x onerror=alert(1)> & שלום 😀"
         self.s1.post("/lesson/%d/comments" % lid, json={"body": body})
         self.assertEqual(self.s1.get("/lesson/%d/comments" % lid).get_json()[0]["body"], body)
         with open(os.path.join(ROOT, "templates", "lesson.html"), encoding="utf-8") as f:
@@ -123,7 +122,7 @@ class Homework(Fixture):
         self.assertEqual(one("SELECT orig, text FROM submissions"), ("v2.txt", "second version"))
 
     def test_L22_deadline_change_updates_label(self):
-        bid = self.new_box(due="2000-01-01T10:00")
+        bid = self.new_box(past=True)
         self.submit(self.s1, bid, "work")
         self.assertIn("באיחור", self.t.get("/box/%d" % bid).get_data(as_text=True))
         self.t.post("/box/%d" % bid, data=dict(due="2099-01-01T10:00"))
@@ -175,8 +174,7 @@ class Persistence(Fixture):
     def test_L26_data_survives_restart(self):
         self.t.post(self.att("/start"))
         self.s1.post(self.att("/checkin"))
-        self.t.post("/course/%d/notes" % self.cid, data=dict(topic="T", date="2000-01-01", start="09:00"))
-        self.s1.post("/lesson/%d/comments" % one("SELECT id FROM lessons")[0], json={"body": "hi"})
+        self.s1.post("/lesson/%d/comments" % self.new_lesson("T"), json={"body": "hi"})
         bid = self.new_box()
         self.submit(self.s1, bid, "work")
         code = ("import app\n"

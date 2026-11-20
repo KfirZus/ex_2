@@ -203,17 +203,20 @@ class U17_PollAnswerInput(Fixture):
 class U18_DueDateInput(Fixture):
     STUDENTS = 0
 
-    @unittest.expectedFailure  # STP: expected to fail today (strptime -> 500)
     def test_U18_bad_due_on_create(self):
         r = self.t.post("/course/%d/homework" % self.cid, data=dict(name="x", due="tomorrow"),
                         follow_redirects=True)
         self.assertLess(r.status_code, 500)
+        self.assertIn("תאריך או שעה לא תקינים", r.get_data(as_text=True))
         self.assertEqual(count("boxes"), 0)
 
-    @unittest.expectedFailure  # STP: expected to fail today (strptime -> 500)
     def test_U18_empty_due_on_edit(self):
         bid = self.new_box()
-        self.assertLess(self.t.post("/box/%d" % bid, data=dict(due="")).status_code, 500)
+        due = one("SELECT due FROM boxes")[0]
+        r = self.t.post("/box/%d" % bid, data=dict(due=""), follow_redirects=True)
+        self.assertLess(r.status_code, 500)
+        self.assertIn("תאריך או שעה לא תקינים", r.get_data(as_text=True))
+        self.assertEqual(one("SELECT due FROM boxes")[0], due)
 
 
 class U19_Fmt(unittest.TestCase):
