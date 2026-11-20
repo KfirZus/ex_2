@@ -42,3 +42,4 @@ table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px so
 .qbox{border:2px dashed #b7c1d6;border-radius:12px;padding:12px;margin:12px 0}
 .ansrow{display:flex;gap:8px;align-items:center}.ansrow input[type=text]{margin:4px 0}
 .tick{width:56px;flex:none;margin:0;padding:10px;background:#c9d0dd}.tick.on{background:var(--green)}
+.nowrap{white-space:nowrap}

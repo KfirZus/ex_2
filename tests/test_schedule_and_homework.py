@@ -78,6 +78,56 @@ class CourseSchedule(Fixture):
         c.close()
 
 
+class StudentJoinClash(Fixture):
+    """student1 is enrolled in the fixture course: Sunday ("ראשון") 10:00-12:00."""
+    STUDENTS = 1
+    WARN = "כבר נרשמת לקורס אחר באותן שעות"
+
+    def other_course(self, day="ראשון", start="11:00", end="13:00", name="קורס של מורה 2"):
+        t2 = self.register("teacher%d" % count("users"), "מורה", "teacher", m.TEACHER_CODE)
+        t2.post("/course/new", data=dict(name=name, day=day, time=start, end_time=end))
+        cid = one("SELECT MAX(id) FROM courses")[0]
+        return cid, one("SELECT code FROM courses WHERE id=?", cid)[0]
+
+    def enrolled(self, cid):
+        return one("SELECT 1 FROM enroll WHERE course_id=? AND user_id=?", cid,
+                   self.uid("student1")) is not None
+
+    def test_overlap_asks_before_enrolling(self):
+        cid, code = self.other_course()
+        r = self.s1.post("/join", data={"code": code})
+        html = r.get_data(as_text=True)
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(self.WARN, html)
+        self.assertIn("האם את/ה בטוח/ה שברצונך להירשם?", html)
+        self.assertIn("מבוא להנדסת תוכנה", html)  # the course they are already in
+        self.assertIn('<bdi dir="ltr" class="nowrap">11:00–13:00</bdi>', html)
+        self.assertFalse(self.enrolled(cid))
+
+    def test_confirm_enrolls(self):
+        cid, code = self.other_course()
+        r = self.s1.post("/join", data={"code": code, "confirm": "1"})
+        self.assertTrue(r.headers["Location"].endswith("/course/%d" % cid))
+        self.assertTrue(self.enrolled(cid))
+
+    def test_qr_link_also_warns(self):
+        cid, code = self.other_course()
+        self.assertIn(self.WARN, self.s1.get("/join?code=" + code).get_data(as_text=True))
+        self.assertFalse(self.enrolled(cid))
+
+    def test_no_warning_without_overlap(self):
+        for day, start, end in (("ראשון", "12:00", "14:00"), ("ראשון", "08:00", "10:00"),
+                                ("שני", "10:00", "12:00")):
+            cid, code = self.other_course(day, start, end)
+            r = self.s1.post("/join", data={"code": code})
+            self.assertEqual(r.status_code, 302, (day, start, end))
+            self.assertTrue(self.enrolled(cid))
+
+    def test_rejoining_same_course_does_not_warn(self):
+        r = self.s1.post("/join", data={"code": self.code})
+        self.assertEqual(r.status_code, 302)
+
+
 class HomeworkBoxes(Fixture):
     STUDENTS = 2
 

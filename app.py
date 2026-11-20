@@ -321,15 +321,41 @@ def course_form_error(f):
         return "שעה לא תקינה"
     if end <= start:
         return "שעת הסיום חייבת להיות אחרי שעת ההתחלה"
-    for c in q("SELECT name, time, end_time FROM courses WHERE teacher_id=? AND day=?",
-               g.user["id"], f["day"]):
-        s2 = to_minutes(c["time"])
-        e2 = to_minutes(c["end_time"] or default_end(c["time"]))
-        if s2 is not None and e2 is not None and start < e2 and s2 < end:
-            # ⁦...⁩ keeps "10:00–12:00" left-to-right inside the Hebrew sentence
-            return "הקורס \"%s\" כבר קבוע ביום %s בשעות ⁦%s–%s⁩. בחר/י יום או שעה אחרים." % (
-                c["name"], f["day"], hhmm(s2), hhmm(e2))
+    mine = q("SELECT * FROM courses WHERE teacher_id=? AND day=?", g.user["id"], f["day"])
+    for c in overlapping(mine, f["day"], start, end):
+        s2, e2 = course_span(c)
+        # ⁦...⁩ keeps "10:00–12:00" left-to-right inside the Hebrew sentence
+        return "הקורס \"%s\" כבר קבוע ביום %s בשעות ⁦%s–%s⁩. בחר/י יום או שעה אחרים." % (
+            c["name"], f["day"], hhmm(s2), hhmm(e2))
     return None
+
+
+def course_span(c):
+    """(start, end) of a course in minutes since midnight; (None, None) if its time is invalid."""
+    s = to_minutes(c["time"])
+    e = to_minutes(c["end_time"] or default_end(c["time"]))
+    return (s, e) if s is not None and e is not None else (None, None)
+
+
+def overlapping(courses, day, start, end):
+    """Courses from `courses` held on `day` whose hours overlap [start, end).
+    Back-to-back is not an overlap: 12:00-14:00 and 14:00-16:00 are fine."""
+    out = []
+    for c in courses:
+        s2, e2 = course_span(c)
+        if c["day"] == day and s2 is not None and start < e2 and s2 < end:
+            out.append(c)
+    return out
+
+
+def enrolled_clashes(course):
+    """The current student's courses that meet on the same day at overlapping hours."""
+    start, end = course_span(course)
+    if start is None:
+        return []
+    mine = q("SELECT c.* FROM courses c JOIN enroll e ON e.course_id=c.id "
+             "WHERE e.user_id=? AND c.id!=?", g.user["id"], course["id"])
+    return overlapping(mine, course["day"], start, end)
 
 
 @app.route("/join", methods=["GET", "POST"])
@@ -341,6 +367,13 @@ def join():
     if code:
         c = q("SELECT * FROM courses WHERE code=?", code, one=True)
         if c:
+            enrolled = q("SELECT 1 FROM enroll WHERE course_id=? AND user_id=?",
+                         c["id"], g.user["id"], one=True)
+            if not enrolled and request.values.get("confirm") != "1":
+                clashes = enrolled_clashes(c)
+                if clashes:  # warn and ask before enrolling in a course at the same hours
+                    return render_template("join_confirm.html", c=c, clashes=clashes,
+                                           span=course_span(c), hhmm=hhmm)
             db().execute("INSERT OR IGNORE INTO enroll VALUES(?,?)", (c["id"], g.user["id"]))
             db().commit()
             return redirect(url_for("course_home", cid=c["id"]))
