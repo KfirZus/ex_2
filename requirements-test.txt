@@ -1,0 +1,5 @@
+-r requirements.txt
+Pillow       # tests build a JPEG for the attendance-photo cases
+coverage     # STP section 4: coverage run -m unittest discover -s tests
+locust       # STD section 7: load cases L-02 / L-03 (generator machine)
+waitress     # STD section 7: production-like server for the load cases

@@ -37,4 +37,14 @@ Without it the join screen still works via "צילום קוד QR" (photo of the 
 - No CSRF tokens; use only on a trusted classroom network.
 
 ## Tests
+    pip install -r requirements-test.txt
     python -m unittest discover -s tests -v
+
+Test plan / design: `docs/` (STP, STD). Files in `tests/`:
+- `test_app.py` – original logic tests.
+- `test_stp_unit.py` – STP U-01..U-20; `test_stp_logic.py` – new STP logic cases (L-06..L-26);
+  `test_stp_permissions.py` – P-01..P-18; `test_std_cases.py` – STD E-01, E-02, N-04..N-06.
+- Cases the STP/STD mark "expected to fail today" are `@unittest.expectedFailure`; when a fix
+  lands they show as "unexpected success" – remove the decorator then.
+
+Load tests (STD section 7, L-02/L-03): `loadtest/seed_load.py` + `loadtest/locustfile.py`.
