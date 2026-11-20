@@ -22,12 +22,14 @@ class E01_FullLesson(Fixture):
 
     def test_E01_full_lesson(self):
         t = self.t
+        sql("DELETE FROM courses")  # the STD starts from a teacher with no course in this slot
         # 1. create course
-        r = t.post("/course/new", data=dict(name="בדיקת E-01", day="ראשון", time="10:00"), follow_redirects=True)
+        r = t.post("/course/new", data=dict(name="בדיקת E-01", day="ראשון", time="10:00",
+                                            end_time="12:00"), follow_redirects=True)
         cid = one("SELECT MAX(id) FROM courses")[0]
         html = r.get_data(as_text=True)
         self.assertIn("בדיקת E-01", html)
-        self.assertIn("ראשון · 10:00", html)
+        self.assertIn('ראשון · <bdi dir="ltr">10:00–12:00</bdi>', html)
         # 2. add people: 6-char code and join URL
         code = one("SELECT code FROM courses WHERE id=?", cid)[0]
         self.assertRegex(code, r"^[A-Z0-9]{6}$")

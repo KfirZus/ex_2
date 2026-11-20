@@ -11,8 +11,8 @@ with app.app_context():
     if not q("SELECT 1 FROM users WHERE username='teacher'", one=True):
         tid = run("INSERT INTO users(username,pw,role,name) VALUES(?,?,?,?)",
                   "teacher", generate_password_hash("1234"), "teacher", "המרצה")
-        cid = run("INSERT INTO courses(name,day,time,code,teacher_id) VALUES(?,?,?,?,?)",
-                  "מבוא להנדסת תוכנה", "ראשון", "10:00", "DEMO01", tid)
+        cid = run("INSERT INTO courses(name,day,time,end_time,code,teacher_id) VALUES(?,?,?,?,?,?)",
+                  "מבוא להנדסת תוכנה", "ראשון", "10:00", "12:00", "DEMO01", tid)
         for i in range(1, 6):
             uid = run("INSERT INTO users(username,pw,role,name) VALUES(?,?,?,?)",
                       "student%d" % i, generate_password_hash("1234"), "student", "תלמיד %d" % i)

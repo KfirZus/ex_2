@@ -41,7 +41,7 @@ app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, username TEXT UNIQUE, pw TEXT, role TEXT, name TEXT);
-CREATE TABLE IF NOT EXISTS courses(id INTEGER PRIMARY KEY, name TEXT, day TEXT, time TEXT, code TEXT UNIQUE, teacher_id INT);
+CREATE TABLE IF NOT EXISTS courses(id INTEGER PRIMARY KEY, name TEXT, day TEXT, time TEXT, code TEXT UNIQUE, teacher_id INT, end_time TEXT);
 CREATE TABLE IF NOT EXISTS enroll(course_id INT, user_id INT, PRIMARY KEY(course_id,user_id));
 CREATE TABLE IF NOT EXISTS att_sessions(id INTEGER PRIMARY KEY, course_id INT, started REAL, ends REAL);
 CREATE TABLE IF NOT EXISTS att_records(session_id INT, user_id INT, ts REAL, PRIMARY KEY(session_id,user_id));
@@ -85,9 +85,35 @@ def run(sql, *args):
     return cur.lastrowid
 
 
+DAYS = ["ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת"]
+DEFAULT_COURSE_MINUTES = 120  # end time given to courses created before end_time existed
+
+
+def to_minutes(hhmm):
+    """'HH:MM' -> minutes since midnight, or None if invalid."""
+    try:
+        h, m = (int(x) for x in (hhmm or "").split(":"))
+    except ValueError:
+        return None
+    return h * 60 + m if 0 <= h < 24 and 0 <= m < 60 else None
+
+
+def hhmm(minutes):
+    return "%02d:%02d" % divmod(minutes, 60)
+
+
+def default_end(start):
+    s = to_minutes(start)
+    return hhmm(min(s + DEFAULT_COURSE_MINUTES, 23 * 60 + 59)) if s is not None else None
+
+
 def init_db():
     c = sqlite3.connect(DB_PATH)
     c.executescript(SCHEMA)
+    if "end_time" not in [r[1] for r in c.execute("PRAGMA table_info(courses)")]:
+        c.execute("ALTER TABLE courses ADD COLUMN end_time TEXT")  # databases from before end_time
+    for cid, start in c.execute("SELECT id, time FROM courses WHERE end_time IS NULL").fetchall():
+        c.execute("UPDATE courses SET end_time=? WHERE id=?", (default_end(start), cid))
     c.commit()
     c.close()
 
@@ -269,13 +295,41 @@ def courses():
 def course_new():
     if not is_teacher():
         abort(403)
+    form = dict(name="", day=DAYS[0], time="10:00", end_time="12:00")
     if request.method == "POST":
-        f = request.form
-        code = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
-        cid = run("INSERT INTO courses(name,day,time,code,teacher_id) VALUES(?,?,?,?,?)",
-                  f["name"], f["day"], f["time"], code, g.user["id"])
-        return redirect(url_for("course_home", cid=cid))
-    return render_template("course_new.html")
+        form = {k: request.form.get(k, "").strip() for k in form}
+        form["end_time"] = form["end_time"] or default_end(form["time"]) or ""
+        error = course_form_error(form)
+        if not error:
+            code = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
+            cid = run("INSERT INTO courses(name,day,time,end_time,code,teacher_id) VALUES(?,?,?,?,?,?)",
+                      form["name"], form["day"], form["time"], form["end_time"], code, g.user["id"])
+            return redirect(url_for("course_home", cid=cid))
+        flash(error, "error")
+    return render_template("course_new.html", form=form, days=DAYS)
+
+
+def course_form_error(f):
+    """Validates a new course. The same teacher may not have two courses whose times overlap on
+    the same day; back-to-back courses (one ends 14:00, the next starts 14:00) are allowed."""
+    start, end = to_minutes(f["time"]), to_minutes(f["end_time"])
+    if not f["name"]:
+        return "יש להזין שם לקורס"
+    if f["day"] not in DAYS:
+        return "יום לא תקין"
+    if start is None or end is None:
+        return "שעה לא תקינה"
+    if end <= start:
+        return "שעת הסיום חייבת להיות אחרי שעת ההתחלה"
+    for c in q("SELECT name, time, end_time FROM courses WHERE teacher_id=? AND day=?",
+               g.user["id"], f["day"]):
+        s2 = to_minutes(c["time"])
+        e2 = to_minutes(c["end_time"] or default_end(c["time"]))
+        if s2 is not None and e2 is not None and start < e2 and s2 < end:
+            # ⁦...⁩ keeps "10:00–12:00" left-to-right inside the Hebrew sentence
+            return "הקורס \"%s\" כבר קבוע ביום %s בשעות ⁦%s–%s⁩. בחר/י יום או שעה אחרים." % (
+                c["name"], f["day"], hhmm(s2), hhmm(e2))
+    return None
 
 
 @app.route("/join", methods=["GET", "POST"])
@@ -696,14 +750,19 @@ def homework(cid):
     if request.method == "POST":
         if not is_teacher():
             abort(403)
+        name = request.form.get("name", "").strip()
         due = parse_dt(request.form.get("due"), "%Y-%m-%dT%H:%M")
-        if not due:
+        if not name:
+            flash("יש להזין שם למטלה", "error")
+        elif q("SELECT 1 FROM boxes WHERE course_id=? AND lower(trim(name))=lower(?)",
+               cid, name, one=True):
+            flash("כבר קיימת מטלה בשם \"%s\" בקורס הזה" % name, "error")
+        elif not due:
             flash("תאריך או שעה לא תקינים", "error")
         elif is_past(due):
             flash("לא ניתן לקבוע מועד הגשה שכבר עבר", "error")
         else:
-            run("INSERT INTO boxes(course_id,name,due) VALUES(?,?,?)", cid,
-                request.form["name"], due.timestamp())
+            run("INSERT INTO boxes(course_id,name,due) VALUES(?,?,?)", cid, name, due.timestamp())
         return redirect(url_for("homework", cid=cid))
     boxes = q("SELECT * FROM boxes WHERE course_id=? ORDER BY id DESC", cid)
     return render_template("homework.html", c=c, boxes=boxes)
@@ -712,6 +771,22 @@ def homework(cid):
 def get_box(bid):
     b = q("SELECT * FROM boxes WHERE id=?", bid, one=True) or abort(404)
     return b, course_access(b["course_id"])
+
+
+@app.route("/box/<int:bid>/delete", methods=["POST"])
+@login_required
+def box_delete(bid):
+    b, c = get_box(bid)
+    course_access(c["id"], teacher_only=True)
+    for s in q("SELECT filename FROM submissions WHERE box_id=?", bid):
+        try:
+            os.remove(os.path.join(UPLOADS, s["filename"]))
+        except OSError:
+            pass
+    db().execute("DELETE FROM submissions WHERE box_id=?", (bid,))
+    run("DELETE FROM boxes WHERE id=?", bid)
+    flash("המטלה \"%s\" נמחקה" % b["name"], "ok")
+    return redirect(url_for("homework", cid=c["id"]))
 
 
 def late_label(box, ts):

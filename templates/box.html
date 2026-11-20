@@ -11,6 +11,10 @@
     {{ time24('due', due_input[11:], date_id='due_d', future=True, combine=True) }}
     <button class="gray">שינוי</button>
   </form>
+  <form method="post" action="{{ url_for('box_delete', bid=b.id) }}"
+        onsubmit="return confirm('האם את/ה בטוח/ה שתרצה למחוק את המטלה? כל ההגשות שלה יימחקו.')">
+    <button class="red">מחיקת המטלה</button>
+  </form>
   {% else %}
   <form method="post" enctype="multipart/form-data">
     <label>העבודה שלי</label>

@@ -2,7 +2,7 @@
 {% block back %}<a href="{{ url_for('courses') }}">← הקורסים שלי</a>{% endblock %}
 {% block content %}
 <h1>{{ c.name }}</h1>
-<p class="muted">יום {{ c.day }} · {{ c.time }}</p>
+<p class="muted">יום {{ c.day }} · <bdi dir="ltr">{{ c.time }}{% if c.end_time %}–{{ c.end_time }}{% endif %}</bdi></p>
 {% if g.user.role == 'teacher' %}
   <a class="btn green" href="{{ url_for('add_people', cid=c.id) }}">הוספת אנשים לקורס</a>
 {% endif %}

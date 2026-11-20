@@ -166,7 +166,7 @@ class Injection(Baseline):
 
     def test_P12_markup_is_escaped_everywhere(self):
         x = self.XSS
-        cid = self.new_course(self.t, x)
+        cid = self.new_course(self.t, x, day="שני")
         self.new_lesson(x, cid=cid)
         self.t.post("/course/%d/more" % cid, data=dict(body=x))
         self.save_poll([{"text": x, "options": [{"text": x}, {"text": "b"}]}], title=x, cid=cid)
