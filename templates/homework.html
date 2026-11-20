@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_t24.html" import time24 %}
 {% block back %}<a href="{{ url_for('course_home', cid=c.id) }}">← {{ c.name }}</a>{% endblock %}
 {% block content %}
 <h1>בדיקת שיעורי בית</h1>
@@ -7,7 +8,9 @@
   <h2>הוספת תיבת הגשה</h2>
   <form method="post">
     <label>שם המטלה</label><input name="name" placeholder="מטלה 1" required>
-    <label>מועד הגשה</label><input name="due" type="datetime-local" required>
+    <label>מועד הגשה</label>
+    <input id="due_d" type="date" data-future="1" required>
+    {{ time24('due', '23:59', date_id='due_d', future=True, combine=True) }}
     <button class="green">הוספת תיבת הגשה</button>
   </form>
 </div>

@@ -13,7 +13,15 @@
 {% endif %}
 <div class="card">
   <h2>הודעות</h2>
-  {% for a in ann %}<div class="msg teacher">{{ a.body }}<br><small>{{ a.ts|dt }}</small></div>
+  {% for a in ann %}
+  <div class="msg teacher">{{ a.body }}<br><small>{{ a.ts|dt }}</small>
+    {% if g.user.role == 'teacher' %}
+    <form method="post" action="{{ url_for('announcement_delete', cid=c.id, aid=a.id) }}"
+          onsubmit="return confirm('האם את/ה בטוח/ה שתרצה למחוק את ההודעה?')">
+      <button class="red small">מחיקה</button>
+    </form>
+    {% endif %}
+  </div>
   {% else %}<p class="muted">אין הודעות.</p>{% endfor %}
 </div>
 <div class="card">

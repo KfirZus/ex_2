@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_t24.html" import time24 %}
 {% block back %}<a href="{{ url_for('homework', cid=c.id) }}">← תיבות הגשה</a>{% endblock %}
 {% block content %}
 <h1>{{ b.name }}</h1>
@@ -6,7 +7,8 @@
   <p>מועד הגשה: <b>{{ b.due|dt }}</b></p>
   {% if g.user.role == 'teacher' %}
   <form method="post">
-    <input name="due" type="datetime-local" value="{{ due_input }}" required>
+    <input id="due_d" type="date" data-future="1" value="{{ due_input[:10] }}" required>
+    {{ time24('due', due_input[11:], date_id='due_d', future=True, combine=True) }}
     <button class="gray">שינוי</button>
   </form>
   {% else %}

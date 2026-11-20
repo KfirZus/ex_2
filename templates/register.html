@@ -14,6 +14,6 @@
     <div id="tc" class="hidden"><label>קוד מורה</label><input name="teacher_code" type="password"></div>
     <button type="submit">הרשמה</button>
   </form>
-  <a class="btn gray" href="{{ url_for('login') }}">כבר יש לי משתמש</a>
+  <a class="btn gray" href="{{ url_for('login', next=request.args.get('next')) }}">כבר יש לי משתמש</a>
 </div>
 {% endblock %}

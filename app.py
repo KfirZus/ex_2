@@ -7,6 +7,7 @@ import ipaddress
 import json
 import os
 import random
+import socket
 import sqlite3
 import string
 import time
@@ -98,6 +99,19 @@ def fmt(ts, f="%d/%m/%Y %H:%M"):
 app.jinja_env.filters["dt"] = fmt
 
 
+def parse_dt(s, f):
+    """strptime that returns None instead of raising on bad / missing input."""
+    try:
+        return datetime.strptime(s, f)
+    except (TypeError, ValueError):
+        return None
+
+
+def is_past(when):
+    """True if `when` is earlier than the current minute."""
+    return when < datetime.now().replace(second=0, microsecond=0)
+
+
 def current_user():
     uid = session.get("uid")
     return q("SELECT * FROM users WHERE id=?", uid, one=True) if uid else None
@@ -112,9 +126,44 @@ def login_required(f):
     @wraps(f)
     def w(*a, **k):
         if not g.user:
-            return redirect(url_for("login"))
+            # remember where the user was going (e.g. a scanned /join?code=... link)
+            return redirect(url_for("login", next=request.full_path.rstrip("?")))
         return f(*a, **k)
     return w
+
+
+def safe_next(default="courses"):
+    """Return the ?next= target only if it is a local path (no open redirect)."""
+    n = request.values.get("next", "")
+    if n.startswith("/") and not n.startswith("//") and "\\" not in n:
+        return n
+    return url_for(default)
+
+
+def lan_ip():
+    """The machine's LAN address, so a phone can reach the server (localhost would not work)."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("10.255.255.255", 1))  # no packet is sent; just picks the outgoing interface
+            return s.getsockname()[0]
+    except OSError:
+        return None
+
+
+def public_join_url(code):
+    """Join link for the QR. If the teacher opened the site via localhost, a student's phone
+    could not open it, so swap in the LAN IP. Set PUBLIC_URL to override (e.g. an https tunnel)."""
+    path = url_for("join", code=code)
+    base = os.environ.get("PUBLIC_URL", "").rstrip("/")
+    if base:
+        return base + path
+    host = request.host.split(":")[0]
+    if host in ("localhost", "127.0.0.1", "::1", "[::1]"):
+        ip = lan_ip()
+        if ip:
+            port = request.host.partition(":")[2]
+            return "%s://%s%s%s" % (request.scheme, ip, ":" + port if port else "", path)
+    return request.host_url.rstrip("/") + path
 
 
 def course_access(cid, teacher_only=False):
@@ -172,7 +221,7 @@ def login():
         u = q("SELECT * FROM users WHERE username=?", request.form["username"].strip(), one=True)
         if u and check_password_hash(u["pw"], request.form["password"]):
             session["uid"] = u["id"]
-            return redirect(url_for("courses"))
+            return redirect(safe_next())
         flash("שם משתמש או סיסמה שגויים", "error")
     return render_template("login.html")
 
@@ -193,7 +242,7 @@ def register():
             uid = run("INSERT INTO users(username,pw,role,name) VALUES(?,?,?,?)",
                       username, generate_password_hash(f["password"]), role, name)
             session["uid"] = uid
-            return redirect(url_for("courses"))
+            return redirect(safe_next())
     return render_template("register.html")
 
 
@@ -256,7 +305,7 @@ def course_home(cid):
 @login_required
 def add_people(cid):
     c = course_access(cid, teacher_only=True)
-    join_url = url_for("join", code=c["code"], _external=True)
+    join_url = public_join_url(c["code"])
     return render_template("add_people.html", c=c, join_url=join_url)
 
 
@@ -383,11 +432,16 @@ def notes(cid):
         if not is_teacher():
             abort(403)
         f = request.form
-        run("INSERT INTO lessons(course_id,topic,date,start) VALUES(?,?,?,?)",
-            cid, f["topic"], f["date"], f["start"])
-        d = datetime.strptime(f["date"], "%Y-%m-%d").strftime("%d/%m/%Y")
-        flash("קבעת שיעור לתאריך %s בנושא %s האפשרות להגיב תתחיל בשעה %s" % (
-            d, f["topic"], f["start"]), "ok")
+        when = parse_dt("%s %s" % (f.get("date"), f.get("start")), "%Y-%m-%d %H:%M")
+        if not when:
+            flash("תאריך או שעה לא תקינים", "error")
+        elif is_past(when):
+            flash("לא ניתן לקבוע שיעור לתאריך או לשעה שכבר עברו", "error")
+        else:
+            run("INSERT INTO lessons(course_id,topic,date,start) VALUES(?,?,?,?)",
+                cid, f["topic"], f["date"], f["start"])
+            flash("קבעת שיעור לתאריך %s בנושא %s האפשרות להגיב תתחיל בשעה %s" % (
+                when.strftime("%d/%m/%Y"), f["topic"], f["start"]), "ok")
         return redirect(url_for("notes", cid=cid))
     lessons = q("SELECT * FROM lessons WHERE course_id=? ORDER BY date DESC, start DESC", cid)
     return render_template("notes.html", c=c, lessons=lessons)
@@ -607,12 +661,14 @@ def get_rec(rid):
 @login_required
 def recording_summary(rid):
     r, c = get_rec(rid)
-    if not r["summary"]:
-        text = read_text(os.path.join(UPLOADS, r["transcript"])) if r["transcript"] else ""
-        summary = ai.summarize_lecture(text)
+    if r["summary"]:
+        return jsonify(summary=r["summary"], saved=True)
+    text = read_text(os.path.join(UPLOADS, r["transcript"])) if r["transcript"] else ""
+    summary = ai.summarize_lecture(text)
+    saved = bool(text.strip())  # the "no transcript" notice is not cached as a real summary
+    if saved:
         run("UPDATE recordings SET summary=? WHERE id=?", summary, rid)
-        r = q("SELECT * FROM recordings WHERE id=?", rid, one=True)
-    return jsonify(summary=r["summary"])
+    return jsonify(summary=summary, saved=saved)
 
 
 @app.route("/recording/<int:rid>/summary.txt")
@@ -640,8 +696,14 @@ def homework(cid):
     if request.method == "POST":
         if not is_teacher():
             abort(403)
-        due = datetime.strptime(request.form["due"], "%Y-%m-%dT%H:%M").timestamp()
-        run("INSERT INTO boxes(course_id,name,due) VALUES(?,?,?)", cid, request.form["name"], due)
+        due = parse_dt(request.form.get("due"), "%Y-%m-%dT%H:%M")
+        if not due:
+            flash("תאריך או שעה לא תקינים", "error")
+        elif is_past(due):
+            flash("לא ניתן לקבוע מועד הגשה שכבר עבר", "error")
+        else:
+            run("INSERT INTO boxes(course_id,name,due) VALUES(?,?,?)", cid,
+                request.form["name"], due.timestamp())
         return redirect(url_for("homework", cid=cid))
     boxes = q("SELECT * FROM boxes WHERE course_id=? ORDER BY id DESC", cid)
     return render_template("homework.html", c=c, boxes=boxes)
@@ -666,8 +728,13 @@ def box(bid):
     if request.method == "POST":
         if is_teacher():
             if "due" in request.form:  # "שינוי"
-                run("UPDATE boxes SET due=? WHERE id=?", datetime.strptime(
-                    request.form["due"], "%Y-%m-%dT%H:%M").timestamp(), bid)
+                due = parse_dt(request.form["due"], "%Y-%m-%dT%H:%M")
+                if not due:
+                    flash("תאריך או שעה לא תקינים", "error")
+                elif is_past(due):
+                    flash("לא ניתן לקבוע מועד הגשה שכבר עבר", "error")
+                else:
+                    run("UPDATE boxes SET due=? WHERE id=?", due.timestamp(), bid)
         else:
             f = request.files.get("work")
             if f and f.filename:
@@ -726,6 +793,14 @@ def more(cid):
     people = q("SELECT u.name, u.username FROM users u JOIN enroll e ON e.user_id=u.id "
                "WHERE e.course_id=? ORDER BY u.name", cid)
     return render_template("more.html", c=c, ann=ann, people=people)
+
+
+@app.route("/course/<int:cid>/announcement/<int:aid>/delete", methods=["POST"])
+@login_required
+def announcement_delete(cid, aid):
+    course_access(cid, teacher_only=True)
+    run("DELETE FROM announcements WHERE id=? AND course_id=?", aid, cid)
+    return redirect(url_for("more", cid=cid))
 
 
 @app.route("/media/<name>")

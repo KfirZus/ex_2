@@ -42,10 +42,19 @@
 <script>
 async function summarize(id){
   const m = document.getElementById('modal'), s = document.getElementById('sum');
-  s.textContent = 'מכין סיכום...'; m.classList.remove('hidden');
-  const r = await postJSON('/recording/' + id + '/summary');
-  s.textContent = r.ok ? r.data.summary : 'אירעה שגיאה, נסו שוב.';
-  document.getElementById('dl').href = '/recording/' + id + '/summary.txt';
+  const dl = document.getElementById('dl');
+  s.textContent = 'מכין סיכום...'; dl.classList.add('hidden'); m.classList.remove('hidden');
+  try {
+    const r = await postJSON('/recording/' + id + '/summary');
+    if (r.ok && r.data && r.data.summary) {
+      s.textContent = r.data.summary;
+      if (r.data.saved) { dl.href = '/recording/' + id + '/summary.txt'; dl.classList.remove('hidden'); }
+    } else {
+      s.textContent = 'אירעה שגיאה, נסו שוב.';
+    }
+  } catch (e) {
+    s.textContent = 'אירעה שגיאה בחיבור לשרת, נסו שוב.';
+  }
 }
 </script>
 {% endblock %}

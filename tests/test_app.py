@@ -270,5 +270,125 @@ class Recordings(Base):
         self.assertIn("תמלול", ai.summarize_lecture(""))
 
 
+class FixesRound2(Base):
+    """Past dates are rejected, announcements can be deleted, summaries are not auto-created,
+    and a scanned join link survives login."""
+
+    def _dt(self, **delta):
+        from datetime import datetime, timedelta
+        return datetime.now() + timedelta(**delta)
+
+    def test_lesson_in_past_rejected_and_future_allowed(self):
+        past = self._dt(hours=-2)
+        self.t.post("/course/%d/notes" % self.cid, data=dict(
+            topic="old", date=past.strftime("%Y-%m-%d"), start=past.strftime("%H:%M")))
+        self.assertEqual(one("SELECT COUNT(*) FROM lessons")[0], 0)
+        fut = self._dt(days=1)
+        self.t.post("/course/%d/notes" % self.cid, data=dict(
+            topic="new", date=fut.strftime("%Y-%m-%d"), start="10:00"))
+        self.assertEqual(one("SELECT COUNT(*) FROM lessons")[0], 1)
+
+    def test_homework_in_past_rejected_and_future_allowed(self):
+        past = self._dt(minutes=-5)
+        self.t.post("/course/%d/homework" % self.cid, data=dict(
+            name="old", due=past.strftime("%Y-%m-%dT%H:%M")))
+        self.assertEqual(one("SELECT COUNT(*) FROM boxes")[0], 0)
+        fut = self._dt(days=2)
+        self.t.post("/course/%d/homework" % self.cid, data=dict(
+            name="new", due=fut.strftime("%Y-%m-%dT%H:%M")))
+        self.assertEqual(one("SELECT COUNT(*) FROM boxes")[0], 1)
+
+    def test_homework_garbage_date_does_not_crash(self):
+        r = self.t.post("/course/%d/homework" % self.cid, data=dict(name="x", due="garbage"))
+        self.assertIn(r.status_code, (200, 302))
+        self.assertEqual(one("SELECT COUNT(*) FROM boxes")[0], 0)
+
+    def test_pickers_are_24h(self):
+        for url in ("/course/new", "/course/%d/notes" % self.cid, "/course/%d/homework" % self.cid):
+            html = self.t.get(url).get_data(as_text=True)
+            self.assertNotIn('type="time"', html)
+            self.assertNotIn('datetime-local', html)
+            self.assertIn('t24-h', html)
+            self.assertIn('data-future', html) if "course/new" not in url else None
+        html = self.t.get("/course/new").get_data(as_text=True)
+        self.assertIn('<option value="23"', html)
+
+    def test_delete_announcement(self):
+        self.t.post("/course/%d/more" % self.cid, data=dict(body="hello all"))
+        aid = one("SELECT id FROM announcements")[0]
+        page = self.s.get("/course/%d/more" % self.cid).get_data(as_text=True)
+        self.assertIn("hello all", page)
+        self.assertNotIn("/announcement/%d/delete" % aid, page)  # students get no delete button
+        self.assertIn("/announcement/%d/delete" % aid,
+                      self.t.get("/course/%d/more" % self.cid).get_data(as_text=True))
+        self.assertEqual(self.s.post("/course/%d/announcement/%d/delete" % (self.cid, aid)).status_code, 403)
+        self.assertEqual(one("SELECT COUNT(*) FROM announcements")[0], 1)
+        self.t.post("/course/%d/announcement/%d/delete" % (self.cid, aid))
+        self.assertEqual(one("SELECT COUNT(*) FROM announcements")[0], 0)
+
+    def test_delete_announcement_other_teacher_course_forbidden(self):
+        other = m.app.test_client()
+        self.reg(other, "teach2", "T2", "teacher", m.TEACHER_CODE)
+        self.t.post("/course/%d/more" % self.cid, data=dict(body="keep me"))
+        aid = one("SELECT id FROM announcements")[0]
+        other.post("/course/%d/announcement/%d/delete" % (self.cid, aid))
+        self.assertEqual(one("SELECT COUNT(*) FROM announcements")[0], 1)
+
+    def test_summaries_page_modal_hidden_and_no_auto_summary(self):
+        html = self.s.get("/course/%d/summaries" % self.cid).get_data(as_text=True)
+        self.assertIn('id="modal"', html)
+        import re
+        self.assertRegex(html, r'id="modal"[^>]*class="[^"]*hidden|class="[^"]*hidden[^"]*"[^>]*id="modal"')
+        css = open(os.path.join(os.path.dirname(m.__file__), "static", "style.css"), encoding="utf-8").read()
+        self.assertIn(".hidden{display:none!important}", css)
+        self.assertEqual(one("SELECT COUNT(*) FROM recordings")[0], 0)
+
+    def test_summary_without_transcript_is_not_cached(self):
+        import io
+        self.t.post("/course/%d/summaries" % self.cid, data={
+            "recording": (io.BytesIO(b"\0" * 10), "lec.mp4")}, content_type="multipart/form-data")
+        rid = one("SELECT id FROM recordings")[0]
+        r = self.s.post("/recording/%d/summary" % rid).get_json()
+        self.assertFalse(r["saved"])
+        self.assertIn(one("SELECT summary FROM recordings WHERE id=?", rid)[0], (None, ""))
+
+    def test_join_link_survives_login(self):
+        c = m.app.test_client()
+        r = c.get("/join?code=ABC123")
+        self.assertEqual(r.status_code, 302)
+        self.assertIn("next=", r.headers["Location"])
+        r = c.post(r.headers["Location"], data=dict(username="stud", password="pw"))
+        self.assertEqual(r.headers["Location"], "/join?code=ABC123")
+
+    def test_next_is_not_an_open_redirect(self):
+        c = m.app.test_client()
+        for bad in ("//evil.com", "https://evil.com", "/\\evil.com"):
+            r = c.post("/login?next=" + bad, data=dict(username="stud", password="pw"))
+            self.assertEqual(r.headers["Location"], "/courses")
+
+    def test_qr_url_uses_lan_ip_not_localhost(self):
+        orig = m.lan_ip
+        m.lan_ip = lambda: "192.168.1.50"
+        try:
+            html = self.t.get("/course/%d/add-people" % self.cid,
+                              base_url="http://localhost:5000").get_data(as_text=True)
+            self.assertIn("http://192.168.1.50:5000/join?code=", html)
+            self.assertNotIn("localhost:5000/join", html)
+            host = "http://school.example"  # cookies are per-host, so log in there too
+            self.t.post("/login", data=dict(username="teach", password="pw"), base_url=host)
+            html = self.t.get("/course/%d/add-people" % self.cid, base_url=host).get_data(as_text=True)
+            self.assertIn("http://school.example/join?code=", html)
+        finally:
+            m.lan_ip = orig
+
+    def test_qr_libraries_are_served_locally(self):
+        for url, tmpl in (("/course/%d/add-people" % self.cid, self.t), ("/join", self.s)):
+            html = tmpl.get(url).get_data(as_text=True)
+            self.assertNotIn("unpkg.com", html)
+            self.assertNotIn("cdnjs", html)
+        for f in ("qrcode.min.js", "html5-qrcode.min.js"):
+            self.assertEqual(self.s.get("/static/vendor/" + f).status_code, 200)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,19 @@
+{#- 24-hour time picker (the native <input type="time"> follows the OS locale and shows AM/PM on many machines).
+    name      hidden field that is submitted ("HH:MM", or "YYYY-MM-DDTHH:MM" when combine=True)
+    value     initial "HH:MM"
+    date_id   id of a date input this time belongs to (needed for future/combine)
+    future    disable hours/minutes that already passed when the date is today
+    combine   submit date + time together in one field (like datetime-local) -#}
+{% macro time24(name, value='10:00', date_id='', future=False, combine=False) -%}
+{%- set hv = value[:2] -%}{%- set mv = value[3:5] -%}
+<span class="t24" data-date="{{ date_id }}" data-future="{{ '1' if future else '' }}" data-combine="{{ '1' if combine else '' }}">
+  <select class="t24-h" aria-label="שעה">
+    {%- for h in range(24) %}{% set v = '%02d'|format(h) %}<option value="{{ v }}"{{ ' selected' if v == hv }}>{{ v }}</option>{% endfor -%}
+  </select>
+  <b>:</b>
+  <select class="t24-m" aria-label="דקות">
+    {%- for n in range(60) %}{% set v = '%02d'|format(n) %}<option value="{{ v }}"{{ ' selected' if v == mv }}>{{ v }}</option>{% endfor -%}
+  </select>
+  <input type="hidden" name="{{ name }}" value="{{ value }}">
+</span>
+{%- endmacro %}

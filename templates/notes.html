@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_t24.html" import time24 %}
 {% block back %}<a href="{{ url_for('course_home', cid=c.id) }}">← {{ c.name }}</a>{% endblock %}
 {% block content %}
 <h1>הערות על השיעור</h1>
@@ -7,8 +8,8 @@
   <h2>קביעת שיעור</h2>
   <form method="post">
     <label>נושא השיעור</label><input name="topic" required>
-    <label>תאריך</label><input name="date" type="date" required>
-    <label>שעת תחילת תגובות</label><input name="start" type="time" value="{{ c.time }}" required>
+    <label>תאריך</label><input name="date" id="lesson_date" type="date" data-future="1" required>
+    <label>שעת תחילת תגובות</label>{{ time24('start', c.time, date_id='lesson_date', future=True) }}
     <button class="green">קביעת שיעור</button>
   </form>
 </div>

@@ -7,6 +7,6 @@
     <label>סיסמה</label><input name="password" type="password" autocomplete="current-password" required>
     <button type="submit">כניסה</button>
   </form>
-  <a class="btn gray" href="{{ url_for('register') }}">אין לי משתמש - הרשמה</a>
+  <a class="btn gray" href="{{ url_for('register', next=request.args.get('next')) }}">אין לי משתמש - הרשמה</a>
 </div>
 {% endblock %}

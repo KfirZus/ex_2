@@ -32,6 +32,31 @@ async function postJSON(url, body){
 }
 function pad(n){return String(n).padStart(2,'0')}
 function mmss(s){s=Math.max(0,s);return pad(Math.floor(s/60))+':'+pad(s%60)}
+function localToday(){const d=new Date();return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())}
+// 24-hour time pickers (.t24) and "no dates in the past" for date inputs marked data-future
+function initTime24(){
+  document.querySelectorAll('input[type=date][data-future]').forEach(el => { el.min = localToday(); });
+  document.querySelectorAll('.t24').forEach(w => {
+    const h = w.querySelector('.t24-h'), m = w.querySelector('.t24-m'), out = w.querySelector('input[type=hidden]');
+    const dateEl = w.dataset.date ? document.getElementById(w.dataset.date) : null;
+    const future = w.dataset.future === '1', combine = w.dataset.combine === '1';
+    function update(){
+      const now = new Date(), nh = now.getHours(), nm = now.getMinutes();
+      const today = future && dateEl && dateEl.value === localToday();
+      if (today && +h.value < nh) h.value = pad(nh);
+      for (const o of h.options) o.disabled = today && +o.value < nh;
+      const thisHour = today && +h.value === nh;
+      if (thisHour && +m.value < nm) m.value = pad(nm);
+      for (const o of m.options) o.disabled = thisHour && +o.value < nm;
+      const t = h.value + ':' + m.value;
+      out.value = combine ? (dateEl && dateEl.value ? dateEl.value + 'T' + t : '') : t;
+    }
+    h.addEventListener('change', update); m.addEventListener('change', update);
+    if (dateEl) { dateEl.addEventListener('change', update); dateEl.addEventListener('input', update); }
+    update(); setInterval(update, 20000);
+  });
+}
+initTime24();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});
 </script>
 {% block scripts %}{% endblock %}

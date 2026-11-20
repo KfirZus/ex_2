@@ -11,7 +11,7 @@
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="{{ url_for('static', filename='vendor/qrcode.min.js') }}"></script>
 <script>
 if (window.QRCode) new QRCode(document.getElementById('qr'), {text: {{ join_url|tojson }}, width: 280, height: 280});
 else document.getElementById('qr').textContent = '(לא ניתן לטעון QR - השתמשו בקוד)';
