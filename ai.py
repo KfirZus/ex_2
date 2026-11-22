@@ -1,5 +1,5 @@
-"""AI helpers. Uses the Claude API when ANTHROPIC_API_KEY is set (plain HTTPS, no extra
-packages needed); otherwise falls back to simple local heuristics so the demo still runs."""
+"""AI helpers. Uses the Google Gemini API (free tier) when GEMINI_API_KEY is set (plain HTTPS,
+no extra packages needed); otherwise falls back to simple local heuristics so the demo still runs."""
 import base64
 import difflib
 import json
@@ -7,8 +7,9 @@ import os
 import re
 import urllib.request
 
-API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5-5")
+API_KEY = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+API_URL = "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent"
 
 
 def ai_enabled():
@@ -16,19 +17,30 @@ def ai_enabled():
 
 
 def _call(system, content, max_tokens=1500):
+    """content: a string, or a list of parts: {"text": ...} / {"image": (mime, base64)}."""
+    if isinstance(content, str):
+        content = [{"text": content}]
+    parts = [{"inlineData": {"mimeType": p["image"][0], "data": p["image"][1]}}
+             if "image" in p else {"text": p["text"]} for p in content]
     body = json.dumps({
-        "model": MODEL,
-        "max_tokens": max_tokens,
-        "system": system,
-        "messages": [{"role": "user", "content": content}],
+        "systemInstruction": {"parts": [{"text": system}]},
+        "contents": [{"role": "user", "parts": parts}],
+        # the limit also covers the model's internal "thinking" tokens, so leave headroom
+        "generationConfig": {"maxOutputTokens": max_tokens + 2048},
     }).encode()
     req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages", data=body,
-        headers={"x-api-key": API_KEY, "anthropic-version": "2023-06-01",
-                 "content-type": "application/json"})
+        API_URL % MODEL, data=body,
+        headers={"x-goog-api-key": API_KEY, "content-type": "application/json"})
     with urllib.request.urlopen(req, timeout=90) as r:
         data = json.load(r)
-    return "".join(b.get("text", "") for b in data.get("content", []))
+    cands = data.get("candidates") or []
+    text = "".join(p.get("text", "") for c in cands[:1]
+                   for p in (c.get("content") or {}).get("parts", []))
+    if not text.strip():
+        reason = (cands[0].get("finishReason") if cands else
+                  (data.get("promptFeedback") or {}).get("blockReason")) or "empty response"
+        raise RuntimeError("Gemini returned no text (%s)" % reason)
+    return text
 
 
 # ---------------------------------------------------------------- headcount
@@ -44,8 +56,8 @@ def count_people(image_path):
             b64 = base64.b64encode(f.read()).decode()
         out = _call(
             "You count people in classroom photos. Reply with a single integer only.",
-            [{"type": "image", "source": {"type": "base64", "media_type": media, "data": b64}},
-             {"type": "text", "text": "How many people are visible in this photo?"}], 20)
+            [{"image": (media, b64)},
+             {"text": "How many people are visible in this photo?"}], 20)
         m = re.search(r"\d+", out)
         return int(m.group()) if m else None
     except Exception:

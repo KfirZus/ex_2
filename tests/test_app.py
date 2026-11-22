@@ -390,5 +390,50 @@ class FixesRound2(Base):
             self.assertEqual(self.s.get("/static/vendor/" + f).status_code, 200)
 
 
+class GeminiClient(unittest.TestCase):
+    """The Gemini REST call is mocked; checks request shape and response parsing."""
+
+    def _run(self, reply, fn):
+        import io
+        import json as j
+        import urllib.request as ur
+        seen = {}
+
+        def fake(req, timeout=0):
+            seen["url"], seen["headers"], seen["body"] = req.full_url, dict(req.header_items()), j.loads(req.data)
+            return io.BytesIO(j.dumps(reply).encode())
+        orig_open, orig_key = ur.urlopen, ai.API_KEY
+        ur.urlopen, ai.API_KEY = fake, "test-key"
+        try:
+            return fn(), seen
+        finally:
+            ur.urlopen, ai.API_KEY = orig_open, orig_key
+
+    def test_summary_request_and_parse(self):
+        reply = {"candidates": [{"content": {"parts": [{"text": "סיכום "}, {"text": "טוב"}]}}]}
+        out, seen = self._run(reply, lambda: ai.summarize_lecture("שלום עולם " * 20))
+        self.assertEqual(out, "סיכום טוב")
+        self.assertIn("models/gemini-3.8-flash:generateContent", seen["url"])
+        self.assertEqual(seen["headers"].get("X-goog-api-key"), "test-key")
+        self.assertIn("systemInstruction", seen["body"])
+        self.assertEqual(seen["body"]["contents"][0]["role"], "user")
+
+    def test_headcount_sends_image_and_parses_int(self):
+        p = os.path.join(TMP, "x.jpg")
+        open(p, "wb").write(b"\xff\xd8fake")
+        reply = {"candidates": [{"content": {"parts": [{"text": "There are 7"}]}}]}
+        n, seen = self._run(reply, lambda: ai.count_people(p))
+        self.assertEqual(n, 7)
+        parts = seen["body"]["contents"][0]["parts"]
+        self.assertEqual(parts[0]["inlineData"]["mimeType"], "image/jpeg")
+
+    def test_empty_or_blocked_reply_falls_back(self):
+        out, _ = self._run({"candidates": [{"finishReason": "SAFETY"}]},
+                           lambda: ai.summarize_lecture("שלום עולם " * 20))
+        self.assertIn("שגיאה בקריאה ל-AI", out)  # error shown, plus the local extractive summary
+        n, _ = self._run({"candidates": []}, lambda: ai.count_people(os.path.join(TMP, "x.jpg")))
+        self.assertIsNone(n)
+
+
 if __name__ == "__main__":
     unittest.main()
