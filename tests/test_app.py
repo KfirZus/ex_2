@@ -435,5 +435,24 @@ class GeminiClient(unittest.TestCase):
         self.assertIsNone(n)
 
 
+class EnvLoader(unittest.TestCase):
+    def test_loads_values_without_overriding_real_env(self):
+        import env_loader
+        p = os.path.join(TMP, "t.env")
+        open(p, "w", encoding="utf-8").write(
+            '# c\nA_KEY="quoted val"\nB_KEY=plain\nSET_ALREADY=from_file\nbad line\n')
+        os.environ["SET_ALREADY"] = "from_env"
+        for k in ("A_KEY", "B_KEY"):
+            os.environ.pop(k, None)
+        env_loader.load_env(p)
+        self.assertEqual(os.environ["A_KEY"], "quoted val")
+        self.assertEqual(os.environ["B_KEY"], "plain")
+        self.assertEqual(os.environ["SET_ALREADY"], "from_env")
+
+    def test_env_file_is_gitignored(self):
+        gi = open(os.path.join(os.path.dirname(m.__file__), ".gitignore")).read().split()
+        self.assertIn(".env", gi)
+
+
 if __name__ == "__main__":
     unittest.main()
