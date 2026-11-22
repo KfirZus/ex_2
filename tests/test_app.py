@@ -454,5 +454,66 @@ class EnvLoader(unittest.TestCase):
         self.assertIn(".env", gi)
 
 
+class GeminiErrors(unittest.TestCase):
+    def test_http_error_is_logged_and_headcount_returns_none(self):
+        import io
+        import contextlib
+        import urllib.error
+        import urllib.request as ur
+
+        def boom(req, timeout=0):
+            raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {},
+                                         io.BytesIO(b'{"error":{"message":"API key not valid"}}'))
+        p = os.path.join(TMP, "y.jpg")
+        open(p, "wb").write(b"\xff\xd8fake")
+        orig_open, orig_key = ur.urlopen, ai.API_KEY
+        ur.urlopen, ai.API_KEY = boom, "bad"
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err):
+                self.assertIsNone(ai.count_people(p))
+        finally:
+            ur.urlopen, ai.API_KEY = orig_open, orig_key
+        self.assertIn("403", err.getvalue())
+        self.assertIn("API key not valid", err.getvalue())
+
+
+class GeminiRetry(unittest.TestCase):
+    def _fail_then(self, fails, code):
+        import io
+        import json as j
+        import urllib.error
+        import urllib.request as ur
+        calls = {"n": 0}
+
+        def fake(req, timeout=0):
+            calls["n"] += 1
+            if calls["n"] <= fails:
+                raise urllib.error.HTTPError(req.full_url, code, "x", {}, io.BytesIO(b"{}"))
+            return io.BytesIO(j.dumps({"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}).encode())
+        orig = (ur.urlopen, ai.API_KEY, ai.RETRY_DELAYS)
+        ur.urlopen, ai.API_KEY, ai.RETRY_DELAYS = fake, "k", (0, 0, 0)
+        try:
+            try:
+                return ai._call("s", "hello"), calls["n"]
+            except RuntimeError as e:
+                return str(e), calls["n"]
+        finally:
+            ur.urlopen, ai.API_KEY, ai.RETRY_DELAYS = orig
+
+    def test_503_is_retried_until_success(self):
+        self.assertEqual(self._fail_then(2, 503), ("ok", 3))
+
+    def test_gives_up_after_retries(self):
+        out, n = self._fail_then(99, 503)
+        self.assertEqual(n, 4)
+        self.assertIn("503", out)
+
+    def test_bad_key_is_not_retried(self):
+        out, n = self._fail_then(99, 403)
+        self.assertEqual(n, 1)
+        self.assertIn("403", out)
+
+
 if __name__ == "__main__":
     unittest.main()

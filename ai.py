@@ -5,10 +5,15 @@ import difflib
 import json
 import os
 import re
+import sys
+import time
+import urllib.error
 import urllib.request
 
 API_KEY = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+RETRY_DELAYS = (2, 5, 10)  # seconds to wait before each retry on temporary Google errors
+RETRY_CODES = (429, 500, 502, 503, 504)
 API_URL = "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent"
 
 
@@ -31,8 +36,17 @@ def _call(system, content, max_tokens=1500):
     req = urllib.request.Request(
         API_URL % MODEL, data=body,
         headers={"x-goog-api-key": API_KEY, "content-type": "application/json"})
-    with urllib.request.urlopen(req, timeout=90) as r:
-        data = json.load(r)
+    for attempt in range(len(RETRY_DELAYS) + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=90) as r:
+                data = json.load(r)
+            break
+        except urllib.error.HTTPError as e:  # include Google's explanation (bad key, quota...)
+            if e.code in RETRY_CODES and attempt < len(RETRY_DELAYS):
+                time.sleep(RETRY_DELAYS[attempt])  # overloaded / rate limited: try again
+                continue
+            detail = e.read().decode("utf-8", "replace")[:400]
+            raise RuntimeError("Gemini HTTP %s: %s" % (e.code, detail)) from None
     cands = data.get("candidates") or []
     text = "".join(p.get("text", "") for c in cands[:1]
                    for p in (c.get("content") or {}).get("parts", []))
@@ -60,7 +74,8 @@ def count_people(image_path):
              {"text": "How many people are visible in this photo?"}], 20)
         m = re.search(r"\d+", out)
         return int(m.group()) if m else None
-    except Exception:
+    except Exception as e:
+        print("[AI] headcount failed:", e, file=sys.stderr)
         return None
 
 
@@ -119,7 +134,7 @@ def review_homework(mine_name, mine_text, others):
                 "העבודה הנבדקת:\n%s\n\nעבודות אחרות להשוואה:\n%s" % (mine_text[:8000], peers),
                 2000)
         except Exception as e:
-            pass
+            print("[AI] homework review failed:", e, file=sys.stderr)
     lines = ["סקירה אוטומטית (ללא AI חיצוני):",
              "• אורך העבודה: %d מילים" % len(mine_text.split()),
              "• הושוו %d עבודות אחרות." % len(others)]
