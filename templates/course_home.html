@@ -1,17 +1,34 @@
 {% extends "base.html" %}
 {% block back %}<a href="{{ url_for('courses') }}">← הקורסים שלי</a>{% endblock %}
 {% block content %}
-<h1>{{ c.name }}</h1>
-<p class="muted">יום {{ c.day }} · <bdi dir="ltr">{{ c.time }}{% if c.end_time %}–{{ c.end_time }}{% endif %}</bdi></p>
-{% if g.user.role == 'teacher' %}
-  <a class="btn green" href="{{ url_for('add_people', cid=c.id) }}">הוספת אנשים לקורס</a>
-{% endif %}
-<div class="grid">
-  <a class="btn tab" href="{{ url_for('attendance', cid=c.id) }}"><span class="ic">✅</span>בדיקת נוכחות</a>
-  <a class="btn tab" href="{{ url_for('notes', cid=c.id) }}"><span class="ic">💬</span>הערות על השיעור</a>
-  <a class="btn tab" href="{{ url_for('polls', cid=c.id) }}"><span class="ic">📊</span>סקר על החומר הנלמד</a>
-  <a class="btn tab" href="{{ url_for('summaries', cid=c.id) }}"><span class="ic">🎬</span>סיכום הרצאות</a>
-  <a class="btn tab" href="{{ url_for('homework', cid=c.id) }}"><span class="ic">📝</span>בדיקת שיעורי בית</a>
-  <a class="btn tab" href="{{ url_for('more', cid=c.id) }}"><span class="ic">📌</span>הודעות ומשתתפים</a>
+{% from "_icons.html" import icon %}
+<section class="hero">
+  <div class="hero-t">
+    <h1>{{ c.name }}</h1>
+    <p>יום {{ c.day }} · <bdi dir="ltr">{{ c.time }}{% if c.end_time %}–{{ c.end_time }}{% endif %}</bdi></p>
+    {% if g.user.role == 'teacher' %}
+      <a class="btn hero-btn" href="{{ url_for('add_people', cid=c.id) }}">הוספת אנשים לקורס</a>
+    {% endif %}
+  </div>
+  <div class="hero-art" aria-hidden="true"><span>📚</span></div>
+</section>
+
+{% set tiles = [
+  ('attendance', 'attendance', 'בדיקת נוכחות', 'רישום נוכחות בשיעור'),
+  ('notes', 'notes', 'הערות על השיעור', 'תגובות ושאלות לפי שיעור'),
+  ('polls', 'polls', 'סקר על החומר הנלמד', 'שאלות קצרות בזמן אמת'),
+  ('summaries', 'summaries', 'סיכום הרצאות', 'הקלטות וסיכומים'),
+  ('homework', 'homework', 'בדיקת שיעורי בית', 'הגשות ומשוב'),
+  ('more', 'more', 'הודעות ומשתתפים', 'הודעות לכיתה ורשימת משתתפים'),
+] %}
+<div class="dash">
+  {% for key, ic, label, desc in tiles %}
+  <a class="dcard" href="{{ url_for(key, cid=c.id) }}">
+    <span class="dicon">{{ icon(ic) }}</span>
+    <b>{{ label }}</b>
+    <small>{{ desc }}</small>
+    <span class="see">פתיחה ←</span>
+  </a>
+  {% endfor %}
 </div>
 {% endblock %}
