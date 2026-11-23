@@ -30,7 +30,8 @@ Without it the join screen still works via "צילום קוד QR" (photo of the 
 ## Configuration (env vars)
 - `ALLOWED_NETWORKS` – CIDRs counted as school Wi-Fi (default: loopback + private ranges, so the demo works anywhere; set e.g. `192.168.1.0/24` for the real class).
 - Put settings in a local `.env` file (copy `.env.example`; it is git-ignored) or set them as real environment variables (hosting dashboard). Real env vars win over `.env`.
-- `GEMINI_API_KEY` (+ optional `GEMINI_MODEL`, default `gemini-3.8-flash`; free key from https://aistudio.google.com/apikey) – enables real AI: headcount from photo, lecture summary, homework deep review. Without it: local fallbacks (headcount shows "not available", extractive summary, similarity-based review).
+- `GEMINI_API_KEY` (+ optional `GEMINI_MODEL`, default `gemini-3.8-flash`, and `GEMINI_FALLBACK_MODEL`, default `gemini-3.6-flash`, empty to disable; free key from https://aistudio.google.com/apikey) – enables real AI: headcount from photo, lecture summary, homework deep review. Without it: local fallbacks (headcount shows "not available", extractive summary, similarity-based review).
+- AI privacy: photos, transcripts and homework text are sent to Google. E-mails, phone numbers and 9-digit IDs are masked and photo metadata is dropped (needs Pillow), but names inside the text are not. On Google's free tier people may review this data and it may be used to improve Google's products – use a billed project for real students.
 - `SC_DATA` – data folder (DB + uploads). `SECRET_KEY` – session key (change for real use).
 
 ## Known limits (demo scope)
@@ -38,4 +39,15 @@ Without it the join screen still works via "צילום קוד QR" (photo of the 
 - No CSRF tokens; use only on a trusted classroom network.
 
 ## Tests
+    pip install -r requirements-test.txt
     python -m unittest discover -s tests -v
+
+Test plan / design: `docs/` (STP, STD). Files in `tests/`:
+- `test_app.py` – original logic tests + Gemini client (the network is mocked; no key needed).
+- `test_schedule_and_homework.py` – course hours / overlap rules and homework boxes.
+- `test_stp_unit.py` – STP U-01..U-20; `test_stp_logic.py` – new STP logic cases (L-06..L-26);
+  `test_stp_permissions.py` – P-01..P-18; `test_std_cases.py` – STD E-01, E-02, N-04..N-06.
+- Cases the STP/STD mark "expected to fail today" are `@unittest.expectedFailure`; when a fix
+  lands they show as "unexpected success" – remove the decorator then.
+
+Load tests (STD section 7, L-02/L-03): `loadtest/seed_load.py` + `loadtest/locustfile.py`.

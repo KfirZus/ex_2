@@ -2,6 +2,8 @@
 no extra packages needed); otherwise falls back to simple local heuristics so the demo still runs."""
 import base64
 import difflib
+import http.client
+import io
 import json
 import os
 import re
@@ -16,48 +18,88 @@ MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.6-flash")
 RETRY_DELAYS = (2, 5, 10)  # seconds to wait before each retry on temporary Google errors
 RETRY_CODES = (429, 500, 502, 503, 504)
-NETWORK_RETRIES = 1   # extra attempts after a timeout / connection error
-TIMEOUT = 90          # seconds to wait for each answer
+MAX_WAIT = 15         # if Google asks for a longer wait than this, give up on that model
+TIMEOUT = 35          # seconds to wait for each answer
+TOTAL_BUDGET = 75     # seconds for one AI request in total (all retries + the fallback model)
+MIN_TRY = 5           # do not start another attempt with less time than this left
+MAX_IMAGE_SIDE = 2048  # photos are shrunk to this many pixels before being sent
+MAX_IMAGE_BYTES = 14 * 1024 * 1024  # Gemini's inline limit is 20 MB, and base64 adds a third
 API_URL = "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent"
+CUT_OFF_NOTE = "\n\n[התשובה נקטעה כי הגיעה לאורך המרבי]"
 
 
 def ai_enabled():
     return bool(API_KEY)
 
 
-class _Temporary(RuntimeError):
-    """Overload / rate limit / timeout: worth trying another model."""
+class _ModelUnavailable(RuntimeError):
+    """Overload / rate limit / timeout / unknown model: worth trying another model."""
 
 
-def _temporary(e):
-    return isinstance(e, _Temporary)
+def _quota_info(detail):
+    """(seconds Google asks us to wait or None, True if the daily quota is used up)."""
+    try:
+        details = json.loads(detail)["error"].get("details") or []
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return None, False
+    wait, daily = None, False
+    for d in details:
+        if not isinstance(d, dict):
+            continue
+        m = re.fullmatch(r"(\d+(?:\.\d+)?)s", str(d.get("retryDelay", "")))
+        if m:
+            wait = float(m.group(1))
+        for v in d.get("violations") or []:
+            if isinstance(v, dict) and "PerDay" in str(v.get("quotaId", "")):
+                daily = True
+    return wait, daily
 
 
-def _request(model, body):
+def _retry_wait(e, detail, attempt):
+    """Seconds to wait before trying the same model again, or None to stop trying it."""
+    if e.code not in RETRY_CODES or attempt >= len(RETRY_DELAYS):
+        return None
+    wait, daily = _quota_info(detail)
+    if daily:
+        return None
+    header = (e.headers.get("Retry-After") or "") if e.headers else ""
+    if wait is None and header.isdigit():
+        wait = float(header)
+    if wait is None:
+        wait = RETRY_DELAYS[attempt]
+    return wait if wait <= MAX_WAIT else None
+
+
+def _request(model, body, deadline, retry_network):
     req = urllib.request.Request(
         API_URL % model, data=body,
         headers={"x-goog-api-key": API_KEY, "content-type": "application/json"})
-    for attempt in range(len(RETRY_DELAYS) + 1):
+    attempt = 0
+    while True:
+        left = deadline - time.monotonic()
+        if left < MIN_TRY:
+            raise _ModelUnavailable("no time left for another attempt")
         try:
-            with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            with urllib.request.urlopen(req, timeout=min(TIMEOUT, left)) as r:
                 return json.load(r)
         except urllib.error.HTTPError as e:  # include Google's explanation (bad key, quota...)
-            if e.code in RETRY_CODES and attempt < len(RETRY_DELAYS):
-                time.sleep(RETRY_DELAYS[attempt])  # overloaded / rate limited: try again
-                continue
-            detail = e.read().decode("utf-8", "replace")[:400]
-            cls = _Temporary if e.code in RETRY_CODES else RuntimeError
-            raise cls("Gemini HTTP %s: %s" % (e.code, detail)) from None
-        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
-            # timeout / dropped connection: one more try, then give up with a clear message
-            if attempt < NETWORK_RETRIES:
-                time.sleep(2)
-                continue
-            raise _Temporary("no answer from Gemini (%s)" % e) from None
+            detail = e.read().decode("utf-8", "replace")
+            error = "Gemini HTTP %s: %s" % (e.code, detail[:400])
+            if e.code not in RETRY_CODES and e.code != 404:  # 404 = model name retired / unknown
+                raise RuntimeError(error) from None
+            wait = _retry_wait(e, detail, attempt)
+        except (OSError, http.client.HTTPException) as e:  # timeout / dropped connection
+            error = "no answer from Gemini (%s)" % e
+            wait = 2 if retry_network and attempt == 0 else None
+        if wait is None or time.monotonic() + wait + MIN_TRY > deadline:
+            raise _ModelUnavailable(error)
+        time.sleep(wait)
+        attempt += 1
 
 
-def _call(system, content, max_tokens=1500):
-    """content: a string, or a list of parts: {"text": ...} / {"image": (mime, base64)}."""
+def _call(system, content, max_tokens=1500, partial_ok=True):
+    """content: a string, or a list of parts: {"text": ...} / {"image": (mime, base64)}.
+    partial_ok: return a cut-off answer with a visible note; otherwise treat it as a failure."""
     if isinstance(content, str):
         content = [{"text": content}]
     parts = [{"inlineData": {"mimeType": p["image"][0], "data": p["image"][1]}}
@@ -69,39 +111,74 @@ def _call(system, content, max_tokens=1500):
         "generationConfig": {"maxOutputTokens": max_tokens + 2048},
     }).encode()
     models = [MODEL] + ([FALLBACK_MODEL] if FALLBACK_MODEL and FALLBACK_MODEL != MODEL else [])
+    deadline = time.monotonic() + TOTAL_BUDGET
     for i, model in enumerate(models):
+        last = i == len(models) - 1
         try:
-            data = _request(model, body)
+            # after a timeout go straight to the other model; only the last one is tried twice
+            # ... and it always keeps enough time for one full attempt
+            data = _request(model, body, deadline - (0 if last else TIMEOUT), retry_network=last)
             break
-        except RuntimeError as e:
-            if i == len(models) - 1 or not _temporary(e):
+        except _ModelUnavailable as e:
+            if last:
                 raise
             print("[AI] %s unavailable (%s) - trying %s" % (model, e, models[i + 1]), file=sys.stderr)
     cands = data.get("candidates") or []
     text = "".join(p.get("text", "") for c in cands[:1]
                    for p in (c.get("content") or {}).get("parts", []))
+    reason = cands[0].get("finishReason") if cands else (
+        (data.get("promptFeedback") or {}).get("blockReason"))
     if not text.strip():
-        reason = (cands[0].get("finishReason") if cands else
-                  (data.get("promptFeedback") or {}).get("blockReason")) or "empty response"
-        raise RuntimeError("Gemini returned no text (%s)" % reason)
+        raise RuntimeError("Gemini returned no text (%s)" % (reason or "empty response"))
+    if reason == "MAX_TOKENS":
+        if not partial_ok:
+            raise RuntimeError("Gemini answer was cut off (MAX_TOKENS)")
+        text += CUT_OFF_NOTE
     return text
 
 
+def _scrub(text):
+    """Hides e-mails, phone numbers and 9-digit ID numbers before text leaves the server."""
+    text = re.sub(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", "[אימייל]", text)
+    text = re.sub(r"(?<![\w.])(?:\+972[- ]?|0)\d{1,2}[- ]?\d{3}[- ]?\d{4}(?!\w)", "[טלפון]", text)
+    return re.sub(r"(?<![\w.])\d{9}(?!\w|\.\d)", "[מספר מזהה]", text)
+
+
 # ---------------------------------------------------------------- headcount
+def _load_photo(path):
+    """(mime, bytes) to send: shrunk and re-encoded, which also drops EXIF data such as GPS.
+    Without Pillow, or if it cannot read the file, the original bytes are sent."""
+    try:
+        from PIL import Image, ImageOps
+        with Image.open(path) as im:
+            im.draft("RGB", (MAX_IMAGE_SIDE, MAX_IMAGE_SIDE))  # fast, low-memory JPEG decoding
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            im.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE))
+            out = io.BytesIO()
+            im.save(out, "JPEG", quality=85, exif=b"")
+        return "image/jpeg", out.getvalue()
+    except FileNotFoundError:
+        raise
+    except Exception as e:
+        print("[AI] photo not resized:", e, file=sys.stderr)
+    if os.path.getsize(path) > MAX_IMAGE_BYTES:
+        raise ValueError("photo is too large to send")
+    ext = path.rsplit(".", 1)[-1].lower()
+    mime = {"png": "image/png", "webp": "image/webp"}.get(ext, "image/jpeg")
+    with open(path, "rb") as f:
+        return mime, f.read()
+
+
 def count_people(image_path):
     """Returns an int, or None when AI is unavailable / fails."""
     if not ai_enabled():
         return None
     try:
-        ext = image_path.rsplit(".", 1)[-1].lower()
-        media = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
-                 "webp": "image/webp"}.get(ext, "image/jpeg")
-        with open(image_path, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode()
+        mime, data = _load_photo(image_path)
         out = _call(
             "You count people in classroom photos. Reply with a single integer only.",
-            [{"image": (media, b64)},
-             {"text": "How many people are visible in this photo?"}], 20)
+            [{"image": (mime, base64.b64encode(data).decode())},
+             {"text": "How many people are visible in this photo?"}], 20, partial_ok=False)
         m = re.search(r"\d+", out)
         return int(m.group()) if m else None
     except Exception as e:
@@ -110,15 +187,25 @@ def count_people(image_path):
 
 
 # ------------------------------------------------------------------ summary
+# First line of a stand-in summary made while the AI was down; such summaries are never saved.
+AI_FAILED_NOTE = "שירות ה-AI אינו זמין כרגע. זהו סיכום מקומי זמני; נסו שוב מאוחר יותר."
+
+
+def is_failed_summary(summary):
+    # the second prefix is what earlier versions saved in the database on an AI error
+    return summary.startswith((AI_FAILED_NOTE, "שגיאה בקריאה ל-AI"))
+
+
 def summarize_lecture(text):
     if not text.strip():
         return "לא התקבל תמלול להרצאה. יש להעלות קובץ תמלול (txt/vtt/srt) או סיכום של Zoom/Meet."
     if ai_enabled():
         try:
             return _call("אתה עוזר הוראה. סכם הרצאות בעברית בצורה ברורה: נושאים עיקריים, "
-                         "מושגים חשובים ונקודות לסיכום, בבולטים קצרים.", text[:60000])
+                         "מושגים חשובים ונקודות לסיכום, בבולטים קצרים.", _scrub(text[:60000]))
         except Exception as e:
-            return "שגיאה בקריאה ל-AI: %s\n\n%s" % (e, _extractive(text))
+            print("[AI] summary failed:", e, file=sys.stderr)
+            return "%s\n\n%s" % (AI_FAILED_NOTE, _extractive(text))
     return _extractive(text)
 
 
@@ -155,13 +242,13 @@ def review_homework(mine_name, mine_text, others):
     sims = sorted(((lbl, similarity(mine_text, t)) for lbl, t in others), key=lambda x: -x[1])
     if ai_enabled():
         try:
-            peers = "\n\n".join("=== עבודה %d ===\n%s" % (i + 1, t[:4000])
+            peers = "\n\n".join("=== עבודה %d ===\n%s" % (i + 1, _scrub(t[:4000]))
                                 for i, (_, t) in enumerate(others[:12]))
             return _call(
                 "אתה בודק עבודות בית מנוסה. כתוב בעברית סקירה מעמיקה: חוזקות, חולשות, "
                 "הצעות לשיפור, והשוואה לעבודות האחרות (מקוריות, רמה יחסית, חפיפות חשודות). "
                 "אל תחשוף שמות של סטודנטים אחרים.",
-                "העבודה הנבדקת:\n%s\n\nעבודות אחרות להשוואה:\n%s" % (mine_text[:8000], peers),
+                "העבודה הנבדקת:\n%s\n\nעבודות אחרות להשוואה:\n%s" % (_scrub(mine_text[:8000]), peers),
                 2000)
         except Exception as e:
             print("[AI] homework review failed:", e, file=sys.stderr)

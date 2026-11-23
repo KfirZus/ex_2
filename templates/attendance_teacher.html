@@ -18,6 +18,7 @@
       <input type="file" name="photo" accept="image/*" capture="environment" class="hidden" onchange="this.form.submit()">
     </label>
   </form>
+  {% if ai_on %}<p class="muted">התמונה נשלחת לשירות ה-AI של Google לצורך הספירה.</p>{% endif %}
   <button class="gray" onclick="document.getElementById('photos').classList.toggle('hidden')">תמונות נוכחות ({{ photos|length }})</button>
   <div id="photos" class="hidden">
     {% for p in photos %}

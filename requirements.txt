@@ -1,3 +1,4 @@
 flask>=3.0
 opencv-python-headless  # optional, not required by the current code
 cryptography  # optional: only for HTTPS=1
+Pillow  # optional: shrinks attendance photos (and drops GPS data) before the AI headcount
