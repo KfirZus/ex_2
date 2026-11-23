@@ -491,15 +491,15 @@ class GeminiRetry(unittest.TestCase):
             if calls["n"] <= fails:
                 raise urllib.error.HTTPError(req.full_url, code, "x", {}, io.BytesIO(b"{}"))
             return io.BytesIO(j.dumps({"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}).encode())
-        orig = (ur.urlopen, ai.API_KEY, ai.RETRY_DELAYS)
-        ur.urlopen, ai.API_KEY, ai.RETRY_DELAYS = fake, "k", (0, 0, 0)
+        orig = (ur.urlopen, ai.API_KEY, ai.RETRY_DELAYS, ai.FALLBACK_MODEL)
+        ur.urlopen, ai.API_KEY, ai.RETRY_DELAYS, ai.FALLBACK_MODEL = fake, "k", (0, 0, 0), ""
         try:
             try:
                 return ai._call("s", "hello"), calls["n"]
             except RuntimeError as e:
                 return str(e), calls["n"]
         finally:
-            ur.urlopen, ai.API_KEY, ai.RETRY_DELAYS = orig
+            ur.urlopen, ai.API_KEY, ai.RETRY_DELAYS, ai.FALLBACK_MODEL = orig
 
     def test_503_is_retried_until_success(self):
         self.assertEqual(self._fail_then(2, 503), ("ok", 3))
@@ -513,6 +513,50 @@ class GeminiRetry(unittest.TestCase):
         out, n = self._fail_then(99, 403)
         self.assertEqual(n, 1)
         self.assertIn("403", out)
+
+
+class GeminiTimeout(unittest.TestCase):
+    def test_timeout_retried_once_then_clear_error(self):
+        import urllib.request as ur
+        calls = {"n": 0}
+
+        def slow(req, timeout=0):
+            calls["n"] += 1
+            raise TimeoutError("The read operation timed out")
+        orig = (ur.urlopen, ai.API_KEY, ai.time.sleep, ai.FALLBACK_MODEL)
+        ur.urlopen, ai.API_KEY, ai.time.sleep, ai.FALLBACK_MODEL = slow, "k", lambda s: None, ""
+        try:
+            with self.assertRaises(RuntimeError) as cm:
+                ai._call("s", "hi")
+        finally:
+            ur.urlopen, ai.API_KEY, ai.time.sleep, ai.FALLBACK_MODEL = orig
+        self.assertEqual(calls["n"], 2)
+        self.assertIn("no answer from Gemini", str(cm.exception))
+
+    def test_falls_back_to_second_model_when_first_is_overloaded(self):
+        import io
+        import json as j
+        import urllib.error
+        import urllib.request as ur
+        seen = []
+
+        def fake(req, timeout=0):
+            seen.append(req.full_url)
+            if "gemini-3.8-flash" in req.full_url:
+                raise urllib.error.HTTPError(req.full_url, 503, "x", {}, io.BytesIO(b"{}"))
+            return io.BytesIO(j.dumps({"candidates": [{"content": {"parts": [{"text": "from fallback"}]}}]}).encode())
+        orig = (ur.urlopen, ai.API_KEY, ai.RETRY_DELAYS, ai.MODEL, ai.FALLBACK_MODEL)
+        ur.urlopen, ai.API_KEY, ai.RETRY_DELAYS = fake, "k", (0,)
+        ai.MODEL, ai.FALLBACK_MODEL = "gemini-3.8-flash", "gemini-3.6-flash"
+        try:
+            self.assertEqual(ai._call("s", "hi"), "from fallback")
+        finally:
+            ur.urlopen, ai.API_KEY, ai.RETRY_DELAYS, ai.MODEL, ai.FALLBACK_MODEL = orig
+        self.assertTrue(seen[-1].endswith("gemini-3.6-flash:generateContent"))
+
+    def test_bad_key_does_not_trigger_fallback(self):
+        out, n = GeminiRetry._fail_then(self, 99, 403)
+        self.assertEqual(n, 1)
 
 
 if __name__ == "__main__":

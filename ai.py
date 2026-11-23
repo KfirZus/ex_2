@@ -12,13 +12,48 @@ import urllib.request
 
 API_KEY = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+# used automatically when MODEL is overloaded / times out (set to empty to disable)
+FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.6-flash")
 RETRY_DELAYS = (2, 5, 10)  # seconds to wait before each retry on temporary Google errors
 RETRY_CODES = (429, 500, 502, 503, 504)
+NETWORK_RETRIES = 1   # extra attempts after a timeout / connection error
+TIMEOUT = 90          # seconds to wait for each answer
 API_URL = "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent"
 
 
 def ai_enabled():
     return bool(API_KEY)
+
+
+class _Temporary(RuntimeError):
+    """Overload / rate limit / timeout: worth trying another model."""
+
+
+def _temporary(e):
+    return isinstance(e, _Temporary)
+
+
+def _request(model, body):
+    req = urllib.request.Request(
+        API_URL % model, data=body,
+        headers={"x-goog-api-key": API_KEY, "content-type": "application/json"})
+    for attempt in range(len(RETRY_DELAYS) + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:  # include Google's explanation (bad key, quota...)
+            if e.code in RETRY_CODES and attempt < len(RETRY_DELAYS):
+                time.sleep(RETRY_DELAYS[attempt])  # overloaded / rate limited: try again
+                continue
+            detail = e.read().decode("utf-8", "replace")[:400]
+            cls = _Temporary if e.code in RETRY_CODES else RuntimeError
+            raise cls("Gemini HTTP %s: %s" % (e.code, detail)) from None
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            # timeout / dropped connection: one more try, then give up with a clear message
+            if attempt < NETWORK_RETRIES:
+                time.sleep(2)
+                continue
+            raise _Temporary("no answer from Gemini (%s)" % e) from None
 
 
 def _call(system, content, max_tokens=1500):
@@ -33,20 +68,15 @@ def _call(system, content, max_tokens=1500):
         # the limit also covers the model's internal "thinking" tokens, so leave headroom
         "generationConfig": {"maxOutputTokens": max_tokens + 2048},
     }).encode()
-    req = urllib.request.Request(
-        API_URL % MODEL, data=body,
-        headers={"x-goog-api-key": API_KEY, "content-type": "application/json"})
-    for attempt in range(len(RETRY_DELAYS) + 1):
+    models = [MODEL] + ([FALLBACK_MODEL] if FALLBACK_MODEL and FALLBACK_MODEL != MODEL else [])
+    for i, model in enumerate(models):
         try:
-            with urllib.request.urlopen(req, timeout=90) as r:
-                data = json.load(r)
+            data = _request(model, body)
             break
-        except urllib.error.HTTPError as e:  # include Google's explanation (bad key, quota...)
-            if e.code in RETRY_CODES and attempt < len(RETRY_DELAYS):
-                time.sleep(RETRY_DELAYS[attempt])  # overloaded / rate limited: try again
-                continue
-            detail = e.read().decode("utf-8", "replace")[:400]
-            raise RuntimeError("Gemini HTTP %s: %s" % (e.code, detail)) from None
+        except RuntimeError as e:
+            if i == len(models) - 1 or not _temporary(e):
+                raise
+            print("[AI] %s unavailable (%s) - trying %s" % (model, e, models[i + 1]), file=sys.stderr)
     cands = data.get("candidates") or []
     text = "".join(p.get("text", "") for c in cands[:1]
                    for p in (c.get("content") or {}).get("parts", []))
