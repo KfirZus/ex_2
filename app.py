@@ -470,7 +470,9 @@ def attendance_photo(cid):
         return redirect(url_for("attendance", cid=cid))
     name = save_upload(f)
     sess = q("SELECT * FROM att_sessions WHERE course_id=? ORDER BY id DESC", cid, one=True)
-    count = ai.count_people(os.path.join(UPLOADS, name))
+    count, problem = ai.headcount(os.path.join(UPLOADS, name))
+    if problem:
+        flash(problem, "error")
     registered = q("SELECT COUNT(*) n FROM att_records WHERE session_id=?", sess["id"],
                    one=True)["n"] if sess else 0
     run("INSERT INTO att_photos(course_id,session_id,filename,taken,ai_count,registered) "

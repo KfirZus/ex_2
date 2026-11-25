@@ -14,12 +14,14 @@ import urllib.request
 
 API_KEY = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
-# used automatically when MODEL is overloaded / times out (set to empty to disable)
-FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.6-flash")
+# used in order when MODEL is overloaded / out of quota / times out (comma separated, empty = none)
+FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.6-flash,gemini-3.5-flash-lite")
 RETRY_DELAYS = (2, 5, 10)  # seconds to wait before each retry on temporary Google errors
 RETRY_CODES = (429, 500, 502, 503, 504)
-MAX_WAIT = 15         # if Google asks for a longer wait than this, give up on that model
-TIMEOUT = 35          # seconds to wait for each answer
+TIMEOUT = 35          # seconds to wait for each answer of the last model
+QUICK_TIMEOUT = 20    # ... and of the models before it
+COOLDOWN = 120        # seconds to put a model last after it was overloaded or did not answer
+LONG_COOLDOWN = 3600  # seconds to skip one whose daily quota is used up, or that no longer exists
 TOTAL_BUDGET = 75     # seconds for one AI request in total (all retries + the fallback model)
 MIN_TRY = 5           # do not start another attempt with less time than this left
 MAX_IMAGE_SIDE = 2048  # photos are shrunk to this many pixels before being sent
@@ -34,6 +36,14 @@ def ai_enabled():
 
 class _ModelUnavailable(RuntimeError):
     """Overload / rate limit / timeout / unknown model: worth trying another model."""
+
+    def __init__(self, message, cooldown=0, quota=False):
+        super().__init__(message)
+        self.cooldown = cooldown  # seconds to leave this model alone
+        self.quota = quota        # Google says our request quota is used up
+
+
+_down_until = {}  # model -> time.monotonic() until which it is skipped
 
 
 def _quota_info(detail):
@@ -55,22 +65,32 @@ def _quota_info(detail):
     return wait, daily
 
 
-def _retry_wait(e, detail, attempt):
-    """Seconds to wait before trying the same model again, or None to stop trying it."""
-    if e.code not in RETRY_CODES or attempt >= len(RETRY_DELAYS):
-        return None
+def _http_failure(e, attempt):
+    """(error, wait): what went wrong, and the seconds to wait before trying the same model again
+    (None = do not)."""
+    detail = e.read().decode("utf-8", "replace")
+    message = "Gemini HTTP %s: %s" % (e.code, detail[:400])  # includes Google's explanation
+    if e.code == 404:  # model name retired / unknown
+        return _ModelUnavailable(message, LONG_COOLDOWN), None
+    if e.code not in RETRY_CODES:
+        return RuntimeError(message), None  # bad key etc.: another model would not help
     wait, daily = _quota_info(detail)
-    if daily:
-        return None
     header = (e.headers.get("Retry-After") or "") if e.headers else ""
     if wait is None and header.isdigit():
         wait = float(header)
-    if wait is None:
-        wait = RETRY_DELAYS[attempt]
-    return wait if wait <= MAX_WAIT else None
+    quota = e.code == 429
+    if daily:
+        return _ModelUnavailable(message, LONG_COOLDOWN, quota), None
+    cooldown = (wait or 60) if quota else max(wait or 0, COOLDOWN)
+    if attempt >= len(RETRY_DELAYS):
+        return _ModelUnavailable(message, cooldown, quota), None
+    return (_ModelUnavailable(message, cooldown, quota),
+            RETRY_DELAYS[attempt] if wait is None else wait)
 
 
-def _request(model, body, deadline, retry_network):
+def _request(model, body, deadline, timeout, retry):
+    """retry: try the same model again after a temporary error (only worth it for the last model:
+    failed attempts use up the small free quota, and another model usually answers at once)."""
     req = urllib.request.Request(
         API_URL % model, data=body,
         headers={"x-goog-api-key": API_KEY, "content-type": "application/json"})
@@ -80,26 +100,34 @@ def _request(model, body, deadline, retry_network):
         if left < MIN_TRY:
             raise _ModelUnavailable("no time left for another attempt")
         try:
-            with urllib.request.urlopen(req, timeout=min(TIMEOUT, left)) as r:
+            with urllib.request.urlopen(req, timeout=min(timeout, left)) as r:
                 return json.load(r)
-        except urllib.error.HTTPError as e:  # include Google's explanation (bad key, quota...)
-            detail = e.read().decode("utf-8", "replace")
-            error = "Gemini HTTP %s: %s" % (e.code, detail[:400])
-            if e.code not in RETRY_CODES and e.code != 404:  # 404 = model name retired / unknown
-                raise RuntimeError(error) from None
-            wait = _retry_wait(e, detail, attempt)
+        except urllib.error.HTTPError as e:
+            error, wait = _http_failure(e, attempt)
         except (OSError, http.client.HTTPException) as e:  # timeout / dropped connection
-            error = "no answer from Gemini (%s)" % e
-            wait = 2 if retry_network and attempt == 0 else None
-        if wait is None or time.monotonic() + wait + MIN_TRY > deadline:
-            raise _ModelUnavailable(error)
+            error = _ModelUnavailable("no answer from Gemini (%s)" % e, COOLDOWN)
+            wait = 2 if attempt == 0 else None
+        if wait is None or not retry or time.monotonic() + wait + MIN_TRY > deadline:
+            raise error
         time.sleep(wait)
         attempt += 1
 
 
-def _call(system, content, max_tokens=1500, partial_ok=True):
+def _models():
+    """Models to try, in order. Ones that failed a moment ago go last; ones that will be down for
+    long (daily quota, unknown model) are skipped, unless there is nothing else."""
+    names = [MODEL] + [f.strip() for f in FALLBACK_MODEL.split(",")]
+    names = list(dict.fromkeys(n for n in names if n))
+    now = time.monotonic()
+    wait = {n: max(0, _down_until.get(n, 0) - now) for n in names}
+    names.sort(key=wait.get)  # stable: available models keep their order
+    return [n for n in names if wait[n] <= COOLDOWN] or names
+
+
+def _call(system, content, max_tokens=1500, partial_ok=True, quick=QUICK_TIMEOUT):
     """content: a string, or a list of parts: {"text": ...} / {"image": (mime, base64)}.
-    partial_ok: return a cut-off answer with a visible note; otherwise treat it as a failure."""
+    partial_ok: return a cut-off answer with a visible note; otherwise treat it as a failure.
+    quick: seconds to wait for a model before moving on to the next one."""
     if isinstance(content, str):
         content = [{"text": content}]
     parts = [{"inlineData": {"mimeType": p["image"][0], "data": p["image"][1]}}
@@ -110,17 +138,22 @@ def _call(system, content, max_tokens=1500, partial_ok=True):
         # the limit also covers the model's internal "thinking" tokens, so leave headroom
         "generationConfig": {"maxOutputTokens": max_tokens + 2048},
     }).encode()
-    models = [MODEL] + ([FALLBACK_MODEL] if FALLBACK_MODEL and FALLBACK_MODEL != MODEL else [])
+    models = _models()
     deadline = time.monotonic() + TOTAL_BUDGET
+    out_of_quota = False
     for i, model in enumerate(models):
         last = i == len(models) - 1
         try:
-            # after a timeout go straight to the other model; only the last one is tried twice
-            # ... and it always keeps enough time for one full attempt
-            data = _request(model, body, deadline - (0 if last else TIMEOUT), retry_network=last)
+            # the last model always keeps enough time for one full attempt
+            data = _request(model, body, deadline - (0 if last else TIMEOUT),
+                            TIMEOUT if last else quick, retry=last)
             break
         except _ModelUnavailable as e:
+            out_of_quota = out_of_quota or e.quota
+            if e.cooldown:
+                _down_until[model] = time.monotonic() + e.cooldown
             if last:
+                e.quota = out_of_quota
                 raise
             print("[AI] %s unavailable (%s) - trying %s" % (model, e, models[i + 1]), file=sys.stderr)
     cands = data.get("candidates") or []
@@ -169,21 +202,33 @@ def _load_photo(path):
         return mime, f.read()
 
 
-def count_people(image_path):
-    """Returns an int, or None when AI is unavailable / fails."""
+def headcount(image_path):
+    """(number of people, None) or (None, Hebrew explanation for the teacher)."""
     if not ai_enabled():
-        return None
+        return None, None
     try:
         mime, data = _load_photo(image_path)
         out = _call(
             "You count people in classroom photos. Reply with a single integer only.",
             [{"image": (mime, base64.b64encode(data).decode())},
-             {"text": "How many people are visible in this photo?"}], 20, partial_ok=False)
+             {"text": "How many people are visible in this photo?"}], 20, partial_ok=False, quick=15)
         m = re.search(r"\d+", out)
-        return int(m.group()) if m else None
+        if m:
+            return int(m.group()), None
+        print("[AI] headcount failed: no number in the answer", file=sys.stderr)
+    except _ModelUnavailable as e:
+        print("[AI] headcount failed:", e, file=sys.stderr)
+        if e.quota:
+            return None, "הספירה לא בוצעה: מכסת הבקשות ל-Google נוצלה. המתינו כדקה ונסו שוב."
+        return None, "הספירה לא בוצעה: שירות ה-AI של Google עמוס או לא זמין. נסו שוב בעוד כמה דקות."
     except Exception as e:
         print("[AI] headcount failed:", e, file=sys.stderr)
-        return None
+    return None, "הספירה נכשלה. פרטי השגיאה מופיעים בחלון השרת."
+
+
+def count_people(image_path):
+    """Returns an int, or None when AI is unavailable / fails."""
+    return headcount(image_path)[0]
 
 
 # ------------------------------------------------------------------ summary

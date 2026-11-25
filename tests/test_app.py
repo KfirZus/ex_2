@@ -495,9 +495,14 @@ class FakeGemini(unittest.TestCase):
     """Replaces the network and the clock: `script` maps a model name to its list of replies
     (an int = HTTP error, an exception, a dict = JSON reply); the last one repeats."""
 
+    def setUp(self):
+        self.down = {}  # models in cooldown; kept between ask() calls of one test
+        self.now = [1000.0]
+
     def ask(self, script, fallback="backup", fn=None, body=b"{}", headers=None, seconds_per_call=0):
         self.calls, self.sleeps, self.timeouts = [], [], []
-        now = [1000.0]
+        now = self.now
+        began = now[0]
         left = {k: list(v) for k, v in script.items()}
 
         def fake(req, timeout=0):
@@ -519,13 +524,14 @@ class FakeGemini(unittest.TestCase):
         err = io.StringIO()
         with mock.patch.object(ai.urllib.request, "urlopen", fake), \
                 mock.patch.object(ai, "time", mock.Mock(sleep=sleep, monotonic=lambda: now[0])), \
-                mock.patch.multiple(ai, API_KEY="k", MODEL="main", FALLBACK_MODEL=fallback), \
+                mock.patch.multiple(ai, API_KEY="k", MODEL="main", FALLBACK_MODEL=fallback,
+                                    _down_until=self.down), \
                 contextlib.redirect_stderr(err):
             try:
                 out = fn() if fn else ai._call("s", "hi")
             except RuntimeError as e:
                 out = e
-        self.log, self.elapsed = err.getvalue(), now[0] - 1000
+        self.log, self.elapsed = err.getvalue(), now[0] - began
         return out
 
 
@@ -536,11 +542,19 @@ def reply(text, reason="STOP"):
 TIMED_OUT = TimeoutError("The read operation timed out")
 
 
+def details(*items):
+    return json.dumps({"error": {"details": list(items)}}).encode()
+
+
+DAILY = {"violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]}
+
+
 class GeminiRetry(FakeGemini):
+    """Only the last model is retried."""
+
     def test_503_is_retried_until_success(self):
-        self.assertEqual(self.ask({"main": [503, 503, reply("ok")]}), "ok")
-        self.assertEqual(self.calls, ["main"] * 3)
-        self.assertEqual(self.sleeps, [2, 5])
+        self.assertEqual(self.ask({"main": [503, 503, reply("ok")]}, fallback=""), "ok")
+        self.assertEqual((self.calls, self.sleeps), (["main"] * 3, [2, 5]))
 
     def test_gives_up_after_retries(self):
         self.assertIn("503", str(self.ask({"main": [503]}, fallback="")))
@@ -549,61 +563,125 @@ class GeminiRetry(FakeGemini):
     def test_bad_key_is_not_retried_and_does_not_trigger_fallback(self):
         out = self.ask({"main": [403], "backup": [reply("no")]})
         self.assertIn("403", str(out))
-        self.assertEqual(self.calls, ["main"])
+        self.assertEqual((self.calls, self.down), (["main"], {}))
 
     def test_waits_as_long_as_google_asks(self):
-        body = json.dumps({"error": {"details": [{"retryDelay": "7s"}]}}).encode()
-        self.assertEqual(self.ask({"main": [429, reply("ok")]}, body=body), "ok")
-        self.assertEqual(self.sleeps, [7])
+        self.assertEqual(self.ask({"main": [429, reply("ok")]}, fallback="",
+                                  body=details({"retryDelay": "31.5s"})), "ok")
+        self.assertEqual(self.sleeps, [31.5])
 
     def test_retry_after_header(self):
-        self.assertEqual(self.ask({"main": [429, reply("ok")]}, headers={"Retry-After": "9"}), "ok")
+        self.assertEqual(self.ask({"main": [429, reply("ok")]}, fallback="",
+                                  headers={"Retry-After": "9"}), "ok")
         self.assertEqual(self.sleeps, [9])
 
-    def test_long_requested_wait_goes_straight_to_fallback(self):
-        body = json.dumps({"error": {"details": [{"retryDelay": "59.5s"}]}}).encode()
-        self.assertEqual(self.ask({"main": [429], "backup": [reply("ok")]}, body=body), "ok")
-        self.assertEqual((self.calls, self.sleeps), (["main", "backup"], []))
+    def test_does_not_wait_past_the_time_limit(self):
+        out = self.ask({"main": [429]}, fallback="", body=details({"retryDelay": "300s"}))
+        self.assertTrue(out.quota)
+        self.assertEqual((self.calls, self.sleeps), (["main"], []))
 
     def test_used_up_daily_quota_is_not_retried(self):
-        body = json.dumps({"error": {"details": [
-            {"violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]},
-            {"retryDelay": "1s"}]}}).encode()
-        self.assertEqual(self.ask({"main": [429], "backup": [reply("ok")]}, body=body), "ok")
-        self.assertEqual((self.calls, self.sleeps), (["main", "backup"], []))
-
-    def test_odd_error_bodies_do_not_crash(self):
-        for body in (b"", b"<html>", b"[]", b'{"error": "x"}', b'{"error": {"details": ["x"]}}'):
-            self.assertIn("503", str(self.ask({"main": [503]}, fallback="", body=body)))
-
-
-class GeminiFallback(FakeGemini):
-    def test_overloaded_model(self):
-        self.assertEqual(self.ask({"main": [503], "backup": [reply("from fallback")]}), "from fallback")
-        self.assertEqual(self.calls, ["main"] * 4 + ["backup"])
-        self.assertIn("trying backup", self.log)
-
-    def test_retired_model(self):
-        self.assertEqual(self.ask({"main": [404], "backup": [reply("ok")]}), "ok")
-        self.assertEqual(self.calls, ["main", "backup"])
-
-    def test_timeout_goes_straight_to_fallback(self):
-        self.assertEqual(self.ask({"main": [TIMED_OUT], "backup": [reply("ok")]}), "ok")
-        self.assertEqual(self.calls, ["main", "backup"])
+        self.ask({"main": [429]}, fallback="", body=details(DAILY, {"retryDelay": "1s"}))
+        self.assertEqual((self.calls, self.sleeps), (["main"], []))
 
     def test_single_model_timeout_retried_once_then_clear_error(self):
         out = self.ask({"main": [TIMED_OUT]}, fallback="")
         self.assertIn("no answer from Gemini", str(out))
         self.assertEqual(self.calls, ["main", "main"])
 
+    def test_odd_error_bodies_do_not_crash(self):
+        for body in (b"", b"<html>", b"[]", b'{"error": "x"}', details("x")):
+            self.assertIn("503", str(self.ask({"main": [503]}, fallback="", body=body)))
+
+
+class GeminiFallback(FakeGemini):
+    def test_one_failed_attempt_is_enough_to_switch(self):
+        for failure in (503, 429, 404, TIMED_OUT):
+            self.down.clear()
+            self.assertEqual(self.ask({"main": [failure], "backup": [reply("ok")]}), "ok")
+            self.assertEqual((self.calls, self.sleeps), (["main", "backup"], []))
+            self.assertIn("trying backup", self.log)
+
+    def test_several_fallbacks_in_order(self):
+        script = {"main": [503], "b1": [429], "b2": [reply("ok")]}
+        self.assertEqual(self.ask(script, fallback="b1, b2,main,"), "ok")
+        self.assertEqual(self.calls, ["main", "b1", "b2"])
+
+    def test_failed_model_goes_last_for_a_while(self):
+        script = {"main": [503], "backup": [reply("ok")]}
+        self.ask(script)
+        self.ask(script)
+        self.assertEqual(self.calls, ["backup"])  # no request wasted on the overloaded model
+        self.now[0] += ai.COOLDOWN + 1
+        self.ask(script)
+        self.assertEqual(self.calls, ["main", "backup"])
+
+    def test_cooldown_length(self):
+        for body, code, seconds in ((details({"retryDelay": "40s"}), 429, 40), (b"{}", 429, 60),
+                                    (details(DAILY), 429, ai.LONG_COOLDOWN),
+                                    (b"{}", 404, ai.LONG_COOLDOWN), (b"{}", 503, ai.COOLDOWN)):
+            self.down.clear()
+            self.ask({"main": [code], "backup": [reply("ok")]}, body=body)
+            self.assertEqual(self.down, {"main": self.now[0] + seconds}, (code, body))
+
+    def test_recently_failed_model_is_still_the_last_resort(self):
+        self.ask({"main": [503], "backup": [reply("ok")]})
+        self.assertEqual(self.ask({"main": [reply("back")], "backup": [503]}), "back")
+        self.assertEqual(self.calls, ["backup", "main"])
+
+    def test_model_without_daily_quota_is_skipped(self):
+        self.ask({"main": [429], "backup": [reply("ok")]}, body=details(DAILY))
+        self.assertIsInstance(self.ask({"main": [reply("no")], "backup": [503]}), RuntimeError)
+        self.assertNotIn("main", self.calls)
+
+    def test_all_models_in_cooldown_are_tried_anyway(self):
+        self.ask({"main": [503], "backup": [503]})
+        self.assertEqual(self.ask({"main": [reply("ok")], "backup": [503]}), "ok")
+
     def test_total_time_is_bounded(self):
-        for script in ({"main": [TIMED_OUT], "backup": [TIMED_OUT]}, {"main": [503], "backup": [503]},
-                       {"main": [503, TIMED_OUT], "backup": [503, TIMED_OUT]}):
-            out = self.ask(script, seconds_per_call=999)
+        for script in ({"main": [TIMED_OUT], "b1": [TIMED_OUT], "b2": [TIMED_OUT]},
+                       {"main": [503], "b1": [503], "b2": [503]},
+                       {"main": [503], "b1": [TIMED_OUT], "b2": [503, TIMED_OUT]}):
+            self.down.clear()
+            out = self.ask(script, fallback="b1,b2", seconds_per_call=999)
             self.assertIsInstance(out, RuntimeError)
             self.assertLessEqual(self.elapsed, ai.TOTAL_BUDGET)
-            self.assertLessEqual(max(self.timeouts), ai.TIMEOUT)
-            self.assertIn("backup", self.calls)  # the fallback still got its turn
+            self.assertEqual(self.calls[:3], ["main", "b1", "b2"])  # every model got its turn
+            self.assertEqual(self.timeouts[:3], [ai.QUICK_TIMEOUT, ai.QUICK_TIMEOUT, ai.TIMEOUT])
+
+
+class HeadcountMessage(FakeGemini):
+    def test_teacher_is_told_why(self):
+        p = os.path.join(TMP, "why.jpg")
+        with open(p, "wb") as f:
+            f.write(b"\xff\xd8fake")
+        for script, word in (({"main": [429], "backup": [503]}, "מכסת"),
+                             ({"main": [503], "backup": [TIMED_OUT]}, "עמוס"),
+                             ({"main": [403]}, "חלון השרת"),
+                             ({"main": [reply("no idea")]}, "חלון השרת")):
+            self.down.clear()
+            n, why = self.ask(script, fn=lambda: ai.headcount(p))
+            self.assertIsNone(n)
+            self.assertIn(word, why)
+        self.down.clear()
+        self.assertEqual(self.ask({"main": [reply("8")]}, fn=lambda: ai.headcount(p)), (8, None))
+
+
+class HeadcountFlash(Base):
+    def _upload(self):
+        return self.t.post("/course/%d/attendance/photo" % self.cid, follow_redirects=True,
+                           data={"photo": (io.BytesIO(b"x"), "a.jpg")}).get_data(as_text=True)
+
+    def test_reason_is_shown_and_photo_is_kept(self):
+        with mock.patch.object(ai, "headcount", return_value=(None, "המכסה נוצלה")):
+            self.assertIn("המכסה נוצלה", self._upload())
+        self.assertEqual(one("SELECT COUNT(*) FROM att_photos")[0], 1)
+
+    def test_success_and_no_key_show_no_error(self):
+        self.assertNotIn("הספירה לא בוצעה", self._upload())
+        with mock.patch.object(ai, "headcount", return_value=(6, None)):
+            self._upload()
+        self.assertEqual(one("SELECT ai_count FROM att_photos ORDER BY id DESC")[0], 6)
 
 
 class GeminiCutOff(FakeGemini):
