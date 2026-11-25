@@ -1,9 +1,15 @@
+import base64
+import contextlib
+import io
+import json
 import os
 import sqlite3
 import sys
 import tempfile
 import time
 import unittest
+import urllib.error
+from unittest import mock
 
 TMP = tempfile.mkdtemp()
 os.environ["SC_DATA"] = TMP
@@ -11,6 +17,8 @@ os.makedirs(os.path.join(TMP, "uploads"), exist_ok=True)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import ai  # noqa: E402
 import app as m  # noqa: E402
+
+ai.API_KEY = None  # never call the real AI, even if the developer's shell or .env has a key
 
 OFF_WIFI = {"REMOTE_ADDR": "8.8.8.8"}
 
@@ -388,6 +396,401 @@ class FixesRound2(Base):
             self.assertNotIn("cdnjs", html)
         for f in ("qrcode.min.js", "html5-qrcode.min.js"):
             self.assertEqual(self.s.get("/static/vendor/" + f).status_code, 200)
+
+
+class GeminiClient(unittest.TestCase):
+    """The Gemini REST call is mocked; checks request shape and response parsing."""
+
+    def _run(self, reply, fn):
+        import io
+        import json as j
+        import urllib.request as ur
+        seen = {}
+
+        def fake(req, timeout=0):
+            seen["url"], seen["headers"], seen["body"] = req.full_url, dict(req.header_items()), j.loads(req.data)
+            return io.BytesIO(j.dumps(reply).encode())
+        orig_open, orig_key = ur.urlopen, ai.API_KEY
+        ur.urlopen, ai.API_KEY = fake, "test-key"
+        try:
+            return fn(), seen
+        finally:
+            ur.urlopen, ai.API_KEY = orig_open, orig_key
+
+    def test_summary_request_and_parse(self):
+        reply = {"candidates": [{"content": {"parts": [{"text": "סיכום "}, {"text": "טוב"}]}}]}
+        out, seen = self._run(reply, lambda: ai.summarize_lecture("שלום עולם " * 20))
+        self.assertEqual(out, "סיכום טוב")
+        self.assertIn("models/%s:generateContent" % ai.MODEL, seen["url"])
+        self.assertEqual(seen["headers"].get("X-goog-api-key"), "test-key")
+        self.assertIn("systemInstruction", seen["body"])
+        self.assertEqual(seen["body"]["contents"][0]["role"], "user")
+
+    def test_headcount_sends_image_and_parses_int(self):
+        p = os.path.join(TMP, "x.jpg")
+        open(p, "wb").write(b"\xff\xd8fake")
+        reply = {"candidates": [{"content": {"parts": [{"text": "There are 7"}]}}]}
+        n, seen = self._run(reply, lambda: ai.count_people(p))
+        self.assertEqual(n, 7)
+        parts = seen["body"]["contents"][0]["parts"]
+        self.assertEqual(parts[0]["inlineData"]["mimeType"], "image/jpeg")
+
+    def test_empty_or_blocked_reply_falls_back(self):
+        out, _ = self._run({"candidates": [{"finishReason": "SAFETY"}]},
+                           lambda: ai.summarize_lecture("שלום עולם " * 20))
+        self.assertTrue(ai.is_failed_summary(out))  # notice, plus the local extractive summary
+        self.assertNotIn("SAFETY", out)  # technical details go to the log, not to students
+        p = os.path.join(TMP, "blocked.jpg")
+        with open(p, "wb") as f:
+            f.write(b"\xff\xd8fake")
+        n, seen = self._run({"candidates": []}, lambda: ai.count_people(p))
+        self.assertIsNone(n)
+        self.assertIn("url", seen)  # the request really was made
+
+
+class EnvLoader(unittest.TestCase):
+    def test_loads_values_without_overriding_real_env(self):
+        import env_loader
+        p = os.path.join(TMP, "t.env")
+        open(p, "w", encoding="utf-8").write(
+            '# c\nA_KEY="quoted val"\nB_KEY=plain\nSET_ALREADY=from_file\nbad line\n')
+        os.environ["SET_ALREADY"] = "from_env"
+        for k in ("A_KEY", "B_KEY"):
+            os.environ.pop(k, None)
+        env_loader.load_env(p)
+        self.assertEqual(os.environ["A_KEY"], "quoted val")
+        self.assertEqual(os.environ["B_KEY"], "plain")
+        self.assertEqual(os.environ["SET_ALREADY"], "from_env")
+
+    def test_env_file_is_gitignored(self):
+        gi = open(os.path.join(os.path.dirname(m.__file__), ".gitignore")).read().split()
+        self.assertIn(".env", gi)
+
+
+class GeminiErrors(unittest.TestCase):
+    def test_http_error_is_logged_and_headcount_returns_none(self):
+        import io
+        import contextlib
+        import urllib.error
+        import urllib.request as ur
+
+        def boom(req, timeout=0):
+            raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {},
+                                         io.BytesIO(b'{"error":{"message":"API key not valid"}}'))
+        p = os.path.join(TMP, "y.jpg")
+        open(p, "wb").write(b"\xff\xd8fake")
+        orig_open, orig_key = ur.urlopen, ai.API_KEY
+        ur.urlopen, ai.API_KEY = boom, "bad"
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err):
+                self.assertIsNone(ai.count_people(p))
+        finally:
+            ur.urlopen, ai.API_KEY = orig_open, orig_key
+        self.assertIn("403", err.getvalue())
+        self.assertIn("API key not valid", err.getvalue())
+
+
+class FakeGemini(unittest.TestCase):
+    """Replaces the network and the clock: `script` maps a model name to its list of replies
+    (an int = HTTP error, an exception, a dict = JSON reply); the last one repeats."""
+
+    def setUp(self):
+        self.down = {}  # models in cooldown; kept between ask() calls of one test
+        self.now = [1000.0]
+
+    def ask(self, script, fallback="backup", fn=None, body=b"{}", headers=None, seconds_per_call=0):
+        self.calls, self.sleeps, self.timeouts = [], [], []
+        now = self.now
+        began = now[0]
+        left = {k: list(v) for k, v in script.items()}
+
+        def fake(req, timeout=0):
+            model = req.full_url.rsplit("/", 1)[-1].split(":")[0]
+            self.calls.append(model)
+            self.timeouts.append(timeout)
+            self.sent = json.loads(req.data)
+            now[0] += min(seconds_per_call, timeout)
+            r = left[model].pop(0) if len(left[model]) > 1 else left[model][0]
+            if isinstance(r, int):
+                raise urllib.error.HTTPError(req.full_url, r, "x", headers or {}, io.BytesIO(body))
+            if isinstance(r, Exception):
+                raise r
+            return io.BytesIO(json.dumps(r).encode())
+
+        def sleep(s):
+            self.sleeps.append(s)
+            now[0] += s
+        err = io.StringIO()
+        with mock.patch.object(ai.urllib.request, "urlopen", fake), \
+                mock.patch.object(ai, "time", mock.Mock(sleep=sleep, monotonic=lambda: now[0])), \
+                mock.patch.multiple(ai, API_KEY="k", MODEL="main", FALLBACK_MODEL=fallback,
+                                    _down_until=self.down), \
+                contextlib.redirect_stderr(err):
+            try:
+                out = fn() if fn else ai._call("s", "hi")
+            except RuntimeError as e:
+                out = e
+        self.log, self.elapsed = err.getvalue(), now[0] - began
+        return out
+
+
+def reply(text, reason="STOP"):
+    return {"candidates": [{"content": {"parts": [{"text": text}]}, "finishReason": reason}]}
+
+
+TIMED_OUT = TimeoutError("The read operation timed out")
+
+
+def details(*items):
+    return json.dumps({"error": {"details": list(items)}}).encode()
+
+
+DAILY = {"violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]}
+
+
+class GeminiRetry(FakeGemini):
+    """Only the last model is retried."""
+
+    def test_503_is_retried_until_success(self):
+        self.assertEqual(self.ask({"main": [503, 503, reply("ok")]}, fallback=""), "ok")
+        self.assertEqual((self.calls, self.sleeps), (["main"] * 3, [2, 5]))
+
+    def test_gives_up_after_retries(self):
+        self.assertIn("503", str(self.ask({"main": [503]}, fallback="")))
+        self.assertEqual(self.calls, ["main"] * 4)
+
+    def test_bad_key_is_not_retried_and_does_not_trigger_fallback(self):
+        out = self.ask({"main": [403], "backup": [reply("no")]})
+        self.assertIn("403", str(out))
+        self.assertEqual((self.calls, self.down), (["main"], {}))
+
+    def test_waits_as_long_as_google_asks(self):
+        self.assertEqual(self.ask({"main": [429, reply("ok")]}, fallback="",
+                                  body=details({"retryDelay": "31.5s"})), "ok")
+        self.assertEqual(self.sleeps, [31.5])
+
+    def test_retry_after_header(self):
+        self.assertEqual(self.ask({"main": [429, reply("ok")]}, fallback="",
+                                  headers={"Retry-After": "9"}), "ok")
+        self.assertEqual(self.sleeps, [9])
+
+    def test_does_not_wait_past_the_time_limit(self):
+        out = self.ask({"main": [429]}, fallback="", body=details({"retryDelay": "300s"}))
+        self.assertTrue(out.quota)
+        self.assertEqual((self.calls, self.sleeps), (["main"], []))
+
+    def test_used_up_daily_quota_is_not_retried(self):
+        self.ask({"main": [429]}, fallback="", body=details(DAILY, {"retryDelay": "1s"}))
+        self.assertEqual((self.calls, self.sleeps), (["main"], []))
+
+    def test_single_model_timeout_retried_once_then_clear_error(self):
+        out = self.ask({"main": [TIMED_OUT]}, fallback="")
+        self.assertIn("no answer from Gemini", str(out))
+        self.assertEqual(self.calls, ["main", "main"])
+
+    def test_odd_error_bodies_do_not_crash(self):
+        for body in (b"", b"<html>", b"[]", b'{"error": "x"}', details("x")):
+            self.assertIn("503", str(self.ask({"main": [503]}, fallback="", body=body)))
+
+
+class GeminiFallback(FakeGemini):
+    def test_one_failed_attempt_is_enough_to_switch(self):
+        for failure in (503, 429, 404, TIMED_OUT):
+            self.down.clear()
+            self.assertEqual(self.ask({"main": [failure], "backup": [reply("ok")]}), "ok")
+            self.assertEqual((self.calls, self.sleeps), (["main", "backup"], []))
+            self.assertIn("trying backup", self.log)
+
+    def test_several_fallbacks_in_order(self):
+        script = {"main": [503], "b1": [429], "b2": [reply("ok")]}
+        self.assertEqual(self.ask(script, fallback="b1, b2,main,"), "ok")
+        self.assertEqual(self.calls, ["main", "b1", "b2"])
+
+    def test_failed_model_goes_last_for_a_while(self):
+        script = {"main": [503], "backup": [reply("ok")]}
+        self.ask(script)
+        self.ask(script)
+        self.assertEqual(self.calls, ["backup"])  # no request wasted on the overloaded model
+        self.now[0] += ai.COOLDOWN + 1
+        self.ask(script)
+        self.assertEqual(self.calls, ["main", "backup"])
+
+    def test_cooldown_length(self):
+        for body, code, seconds in ((details({"retryDelay": "40s"}), 429, 40), (b"{}", 429, 60),
+                                    (details(DAILY), 429, ai.LONG_COOLDOWN),
+                                    (b"{}", 404, ai.LONG_COOLDOWN), (b"{}", 503, ai.COOLDOWN)):
+            self.down.clear()
+            self.ask({"main": [code], "backup": [reply("ok")]}, body=body)
+            self.assertEqual(self.down, {"main": self.now[0] + seconds}, (code, body))
+
+    def test_recently_failed_model_is_still_the_last_resort(self):
+        self.ask({"main": [503], "backup": [reply("ok")]})
+        self.assertEqual(self.ask({"main": [reply("back")], "backup": [503]}), "back")
+        self.assertEqual(self.calls, ["backup", "main"])
+
+    def test_model_without_daily_quota_is_skipped(self):
+        self.ask({"main": [429], "backup": [reply("ok")]}, body=details(DAILY))
+        self.assertIsInstance(self.ask({"main": [reply("no")], "backup": [503]}), RuntimeError)
+        self.assertNotIn("main", self.calls)
+
+    def test_all_models_in_cooldown_are_tried_anyway(self):
+        self.ask({"main": [503], "backup": [503]})
+        self.assertEqual(self.ask({"main": [reply("ok")], "backup": [503]}), "ok")
+
+    def test_total_time_is_bounded(self):
+        for script in ({"main": [TIMED_OUT], "b1": [TIMED_OUT], "b2": [TIMED_OUT]},
+                       {"main": [503], "b1": [503], "b2": [503]},
+                       {"main": [503], "b1": [TIMED_OUT], "b2": [503, TIMED_OUT]}):
+            self.down.clear()
+            out = self.ask(script, fallback="b1,b2", seconds_per_call=999)
+            self.assertIsInstance(out, RuntimeError)
+            self.assertLessEqual(self.elapsed, ai.TOTAL_BUDGET)
+            self.assertEqual(self.calls[:3], ["main", "b1", "b2"])  # every model got its turn
+            self.assertEqual(self.timeouts[:3], [ai.QUICK_TIMEOUT, ai.QUICK_TIMEOUT, ai.TIMEOUT])
+
+
+class HeadcountMessage(FakeGemini):
+    def test_teacher_is_told_why(self):
+        p = os.path.join(TMP, "why.jpg")
+        with open(p, "wb") as f:
+            f.write(b"\xff\xd8fake")
+        for script, word in (({"main": [429], "backup": [503]}, "מכסת"),
+                             ({"main": [503], "backup": [TIMED_OUT]}, "עמוס"),
+                             ({"main": [403]}, "חלון השרת"),
+                             ({"main": [reply("no idea")]}, "חלון השרת")):
+            self.down.clear()
+            n, why = self.ask(script, fn=lambda: ai.headcount(p))
+            self.assertIsNone(n)
+            self.assertIn(word, why)
+        self.down.clear()
+        self.assertEqual(self.ask({"main": [reply("8")]}, fn=lambda: ai.headcount(p)), (8, None))
+
+
+class HeadcountFlash(Base):
+    def _upload(self):
+        return self.t.post("/course/%d/attendance/photo" % self.cid, follow_redirects=True,
+                           data={"photo": (io.BytesIO(b"x"), "a.jpg")}).get_data(as_text=True)
+
+    def test_reason_is_shown_and_photo_is_kept(self):
+        with mock.patch.object(ai, "headcount", return_value=(None, "המכסה נוצלה")):
+            self.assertIn("המכסה נוצלה", self._upload())
+        self.assertEqual(one("SELECT COUNT(*) FROM att_photos")[0], 1)
+
+    def test_success_and_no_key_show_no_error(self):
+        self.assertNotIn("הספירה לא בוצעה", self._upload())
+        with mock.patch.object(ai, "headcount", return_value=(6, None)):
+            self._upload()
+        self.assertEqual(one("SELECT ai_count FROM att_photos ORDER BY id DESC")[0], 6)
+
+
+class GeminiCutOff(FakeGemini):
+    def test_cut_off_text_is_marked(self):
+        out = self.ask({"main": [reply("half an ans", "MAX_TOKENS")]})
+        self.assertTrue(out.startswith("half an ans"))
+        self.assertIn("נקטעה", out)
+        self.assertEqual(self.ask({"main": [reply("whole")]}), "whole")
+
+    def test_cut_off_headcount_is_not_trusted(self):
+        p = os.path.join(TMP, "cut.jpg")
+        with open(p, "wb") as f:
+            f.write(b"\xff\xd8fake")
+        self.assertIsNone(self.ask({"main": [reply("1", "MAX_TOKENS")]}, fn=lambda: ai.count_people(p)))
+        self.assertIn("cut off", self.log)
+
+
+class GeminiPrivacy(FakeGemini):
+    def test_contact_details_and_ids_are_masked(self):
+        text = "a.b@uni.ac.il 050-1234567 0501234567 +972 50 123 4567 312345678 " \
+               "keep 3.123456789 1234567890 12345 x123456789 2026-11-23"
+        out = ai._scrub(text)
+        for gone in ("a.b@uni", "1234567 ", "050", "+972", "312345678"):
+            self.assertNotIn(gone, out.split("keep")[0])
+        self.assertTrue(out.endswith("keep 3.123456789 1234567890 12345 x123456789 2026-11-23"), out)
+
+    def test_all_text_calls_are_masked(self):
+        for fn in (lambda: ai.summarize_lecture("write to a@b.com now"),
+                   lambda: ai.review_homework("", "me a@b.com", []),
+                   lambda: ai.review_homework("", "me", [("עבודה 1", "peer a@b.com")])):
+            self.assertEqual(self.ask({"main": [reply("ok")]}, fn=fn), "ok")
+            sent = json.dumps(self.sent, ensure_ascii=False)
+            self.assertNotIn("a@b.com", sent)
+            self.assertIn("[אימייל]", sent)
+
+    def test_photo_is_shrunk_rotated_and_stripped(self):
+        from PIL import Image
+        p = os.path.join(TMP, "big.jpg")
+        exif = Image.Exif()
+        exif[0x0112] = 6                       # rotate 90 degrees
+        exif[0x8825] = {1: "N", 2: (32.0, 5.0, 0.0)}  # GPS position
+        Image.new("RGB", (4000, 3000), "gray").save(p, exif=exif)
+        self.assertEqual(self.ask({"main": [reply("12")]}, fn=lambda: ai.count_people(p)), 12)
+        data = self.sent["contents"][0]["parts"][0]["inlineData"]
+        with Image.open(io.BytesIO(base64.b64decode(data["data"]))) as im:
+            self.assertEqual(im.size, (1536, 2048))
+            self.assertEqual(len(im.getexif()), 0)
+        self.assertEqual(data["mimeType"], "image/jpeg")
+
+    def test_png_with_transparency(self):
+        from PIL import Image
+        p = os.path.join(TMP, "t.png")
+        Image.new("RGBA", (50, 40), (1, 2, 3, 100)).save(p)
+        self.assertEqual(ai._load_photo(p)[0], "image/jpeg")
+
+    def test_unreadable_huge_file_is_not_sent(self):
+        p = os.path.join(TMP, "huge.jpg")
+        with open(p, "wb") as f:
+            f.truncate(ai.MAX_IMAGE_BYTES + 1)
+        self.assertIsNone(self.ask({"main": [reply("3")]}, fn=lambda: ai.count_people(p)))
+        self.assertEqual(self.calls, [])
+
+
+class FailedSummaryIsNotSaved(Base):
+    def _recording(self, summary=None):
+        with open(os.path.join(m.UPLOADS, "fs.txt"), "w", encoding="utf-8") as f:
+            f.write("A long enough lecture sentence for the summary. " * 5)
+        sql("INSERT INTO recordings(course_id,filename,transcript,summary,uploaded) VALUES(?,?,?,?,?)",
+            self.cid, "x.mp4", "fs.txt", summary, time.time())
+        return one("SELECT MAX(id) FROM recordings")[0]
+
+    def _saved(self, rid):
+        return one("SELECT summary FROM recordings WHERE id=?", rid)[0]
+
+    def test_ai_failure_is_shown_but_retried_next_time(self):
+        rid = self._recording()
+        with mock.patch.object(ai, "API_KEY", "k"), contextlib.redirect_stderr(io.StringIO()):
+            with mock.patch.object(ai, "_call", side_effect=RuntimeError("Gemini HTTP 503: secret")):
+                r = self.t.post("/recording/%d/summary" % rid).get_json()
+            self.assertFalse(r["saved"])
+            self.assertTrue(r["summary"].startswith(ai.AI_FAILED_NOTE))
+            self.assertNotIn("secret", r["summary"])
+            self.assertIsNone(self._saved(rid))
+            with mock.patch.object(ai, "_call", return_value="real summary"):
+                r = self.t.post("/recording/%d/summary" % rid).get_json()
+        self.assertEqual(r, {"summary": "real summary", "saved": True})
+        self.assertEqual(self._saved(rid), "real summary")
+
+    def test_error_saved_by_older_version_is_replaced(self):
+        rid = self._recording("שגיאה בקריאה ל-AI: HTTP 503\n\nx")
+        with mock.patch.object(ai, "API_KEY", "k"), mock.patch.object(ai, "_call", return_value="fixed"):
+            self.assertEqual(self.t.post("/recording/%d/summary" % rid).get_json()["summary"], "fixed")
+        self.assertEqual(self._saved(rid), "fixed")
+
+
+class AiNotice(Base):
+    def test_google_notice_only_when_ai_is_on(self):
+        for page in ("attendance", "summaries"):
+            url = "/course/%d/%s" % (self.cid, page)
+            self.assertNotIn("Google לצורך", self.t.get(url).get_data(as_text=True))
+            self.assertNotIn("לשירות ה-AI של Google", self.t.get(url).get_data(as_text=True))
+            with mock.patch.object(ai, "API_KEY", "k"):
+                self.assertIn("לשירות ה-AI של Google", self.t.get(url).get_data(as_text=True))
+
+
+class RepoHygiene(unittest.TestCase):
+    def test_data_folder_is_gitignored(self):
+        with open(os.path.join(os.path.dirname(m.__file__), ".gitignore")) as f:
+            self.assertIn("data/", f.read().split())
 
 
 if __name__ == "__main__":

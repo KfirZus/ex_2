@@ -18,13 +18,14 @@
       <input type="file" name="photo" accept="image/*" capture="environment" class="hidden" onchange="this.form.submit()">
     </label>
   </form>
+  {% if ai_on %}<p class="muted">התמונה נשלחת לשירות ה-AI של Google לצורך הספירה.</p>{% endif %}
   <button class="gray" onclick="document.getElementById('photos').classList.toggle('hidden')">תמונות נוכחות ({{ photos|length }})</button>
   <div id="photos" class="hidden">
     {% for p in photos %}
     <div class="card photo">
       <img src="{{ url_for('media', name=p.filename) }}" alt="תמונת נוכחות">
       <p>{{ p.taken|dt }}</p>
-      <p><b>כמות תלמידים לפי תמונה:</b> {{ p.ai_count if p.ai_count is not none else 'לא זמין (נדרש מפתח AI)' }}</p>
+      <p><b>כמות תלמידים לפי תמונה:</b> {{ p.ai_count if p.ai_count is not none else ('לא זמין (הספירה נכשלה או בוצעה לפני שהוגדר מפתח AI; העלו תמונה חדשה)' if ai_on else 'לא זמין (נדרש מפתח AI)') }}</p>
       <p><b>כמות תלמידים שנרשמו בנוכחות:</b> {{ p.registered }}</p>
       <form method="post" action="{{ url_for('photo_delete', cid=c.id, pid=p.id) }}" onsubmit="return confirm('למחוק את התמונה?')">
         <button class="red small">מחיקה</button>

@@ -9,6 +9,7 @@
     <input type="file" name="recording" accept="video/*,audio/*" required>
     <label>תמלול (אופציונלי: txt / vtt / srt) - משפר את הסיכום</label>
     <input type="file" name="transcript" accept=".txt,.vtt,.srt">
+    {% if ai_on %}<p class="muted">בעת סיכום ההרצאה, התמלול נשלח לשירות ה-AI של Google.</p>{% endif %}
     <button class="green">הוספת הקלטה</button>
   </form>
 </div>

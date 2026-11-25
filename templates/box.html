@@ -19,6 +19,7 @@
   <form method="post" enctype="multipart/form-data">
     <label>העבודה שלי</label>
     <input type="file" name="work" required>
+    {% if ai_on %}<p class="muted">טקסט העבודה עשוי להישלח לשירות ה-AI של Google לצורך סקירה; אין לכלול בו פרטים אישיים.</p>{% endif %}
     <button class="green">הגשה</button>
   </form>
   {% endif %}

@@ -20,6 +20,7 @@ from flask import (Flask, Response, abort, flash, g, jsonify, redirect, render_t
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
+import env_loader  # noqa: F401  (loads .env into os.environ; must come before ai)
 import ai
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -469,7 +470,9 @@ def attendance_photo(cid):
         return redirect(url_for("attendance", cid=cid))
     name = save_upload(f)
     sess = q("SELECT * FROM att_sessions WHERE course_id=? ORDER BY id DESC", cid, one=True)
-    count = ai.count_people(os.path.join(UPLOADS, name))
+    count, problem = ai.headcount(os.path.join(UPLOADS, name))
+    if problem:
+        flash(problem, "error")
     registered = q("SELECT COUNT(*) n FROM att_records WHERE session_id=?", sess["id"],
                    one=True)["n"] if sess else 0
     run("INSERT INTO att_photos(course_id,session_id,filename,taken,ai_count,registered) "
@@ -748,11 +751,12 @@ def get_rec(rid):
 @login_required
 def recording_summary(rid):
     r, c = get_rec(rid)
-    if r["summary"]:
+    if r["summary"] and not ai.is_failed_summary(r["summary"]):
         return jsonify(summary=r["summary"], saved=True)
     text = read_text(os.path.join(UPLOADS, r["transcript"])) if r["transcript"] else ""
     summary = ai.summarize_lecture(text)
-    saved = bool(text.strip())  # the "no transcript" notice is not cached as a real summary
+    # the "no transcript" notice and AI-failure stand-ins are not cached as real summaries
+    saved = bool(text.strip()) and not ai.is_failed_summary(summary)
     if saved:
         run("UPDATE recordings SET summary=? WHERE id=?", summary, rid)
     return jsonify(summary=summary, saved=saved)
