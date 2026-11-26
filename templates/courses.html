@@ -1,14 +1,31 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>הקורסים שלי</h1>
-{% for c in courses %}
-  <a class="btn" href="{{ url_for('course_home', cid=c.id) }}">{{ c.name }}<br><small>יום {{ c.day }} · <bdi dir="ltr">{{ c.time }}{% if c.end_time %}–{{ c.end_time }}{% endif %}</bdi></small></a>
-{% else %}
-  <div class="card muted">אין קורסים עדיין.</div>
-{% endfor %}
-{% if g.user.role == 'teacher' %}
-  <a class="btn green" href="{{ url_for('course_new') }}">＋ יצירת קורס חדש</a>
-{% else %}
-  <a class="btn green" href="{{ url_for('join') }}">להצטרף לקורס</a>
-{% endif %}
+{% from "_icons.html" import icon %}
+<section class="hero">
+  <div class="hero-t">
+    <h1>שלום, {{ g.user.name }} 👋</h1>
+    <p>{% if g.user.role == 'teacher' %}כאן מנהלים את כל הקורסים שלך: נוכחות, הערות, סקרים, סיכומים ושיעורי בית.{% else %}כל הקורסים שלך במקום אחד. בחרו קורס כדי להתחיל.{% endif %}</p>
+  </div>
+  <div class="hero-art" aria-hidden="true"><span>🎓</span></div>
+</section>
+
+<section class="panel">
+  <div class="panel-h">
+    <h2>הקורסים שלי</h2>
+    {% if g.user.role == 'teacher' %}
+      <a class="see" href="{{ url_for('course_new') }}">＋ יצירת קורס חדש</a>
+    {% else %}
+      <a class="see" href="{{ url_for('join') }}">להצטרף לקורס</a>
+    {% endif %}
+  </div>
+  {% for c in courses %}
+  <a class="item" href="{{ url_for('course_home', cid=c.id) }}">
+    <span class="chip">{{ c.name[:1] }}</span>
+    <span class="item-t"><b>{{ c.name }}</b><small>יום {{ c.day }} · <bdi dir="ltr">{{ c.time }}{% if c.end_time %}–{{ c.end_time }}{% endif %}</bdi></small></span>
+    <span class="go">{{ icon('arrow') }}</span>
+  </a>
+  {% else %}
+  <p class="muted">אין קורסים עדיין.</p>
+  {% endfor %}
+</section>
 {% endblock %}

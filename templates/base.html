@@ -5,16 +5,55 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{% block title %}כיתה חכמה{% endblock %}</title>
 <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
-<meta name="theme-color" content="#1a5fb4">
+<meta name="theme-color" content="#0b5cc4">
 <link rel="icon" href="{{ url_for('static', filename='icon.svg') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-<body>
-<header>
+{% from "_icons.html" import icon with context %}
+{% set ep = request.endpoint %}
+{# Course sub-navigation appears on every page of a course the user is in ("join" shows a course they have not joined yet). #}
+{% set in_course = g.user and c is defined and c and ep != 'join' %}
+{% set sections = [
+  ('attendance', 'attendance', 'בדיקת נוכחות', 'נוכחות', ['attendance']),
+  ('notes', 'notes', 'הערות על השיעור', 'הערות', ['notes', 'lesson']),
+  ('polls', 'polls', 'סקר על החומר הנלמד', 'סקרים', ['polls', 'poll_new', 'poll_live', 'poll_review']),
+  ('summaries', 'summaries', 'סיכום הרצאות', 'סיכומים', ['summaries']),
+  ('homework', 'homework', 'בדיקת שיעורי בית', 'מטלות', ['homework', 'box', 'submission']),
+  ('more', 'more', 'הודעות ומשתתפים', 'הודעות', ['more']),
+] %}
+<body class="{{ 'has-nav' if g.user else 'no-nav' }}">
+{% if g.user %}
+<aside class="side">
+  <a class="side-brand" href="{{ url_for('index') }}"><span class="logo">🎓</span> כיתה חכמה</a>
+  <nav class="nav" aria-label="ניווט ראשי">
+    {% if in_course %}
+      <a class="nav-i hide-sm{{ ' on' if ep == 'courses' }}" href="{{ url_for('courses') }}">{{ icon('book') }}<span class="nl">הקורסים שלי</span></a>
+      <div class="nav-h">{{ c.name }}</div>
+      <a class="nav-i{{ ' on' if ep in ('course_home', 'add_people') }}" href="{{ url_for('course_home', cid=c.id) }}">{{ icon('home') }}<span class="nl">דף הקורס</span><span class="ns">ראשי</span></a>
+      {% for key, ic, label, short, eps in sections %}
+      <a class="nav-i{{ ' on' if ep in eps }}" href="{{ url_for(key, cid=c.id) }}">{{ icon(ic) }}<span class="nl">{{ label }}</span><span class="ns">{{ short }}</span></a>
+      {% endfor %}
+    {% else %}
+      <a class="nav-i{{ ' on' if ep == 'courses' }}" href="{{ url_for('courses') }}">{{ icon('book') }}<span class="nl">הקורסים שלי</span><span class="ns">קורסים</span></a>
+      {% if g.user.role == 'teacher' %}
+      <a class="nav-i{{ ' on' if ep == 'course_new' }}" href="{{ url_for('course_new') }}">{{ icon('plus') }}<span class="nl">קורס חדש</span><span class="ns">קורס חדש</span></a>
+      {% else %}
+      <a class="nav-i{{ ' on' if ep == 'join' }}" href="{{ url_for('join') }}">{{ icon('plus') }}<span class="nl">הצטרפות לקורס</span><span class="ns">הצטרפות</span></a>
+      {% endif %}
+    {% endif %}
+  </nav>
+  <a class="nav-i out" href="{{ url_for('logout') }}">{{ icon('logout') }}<span class="nl">יציאה</span></a>
+</aside>
+{% endif %}
+<div class="page">
+<header class="topbar">
   <a class="brand" href="{{ url_for('index') }}">🎓 כיתה חכמה</a>
   {% if g.user %}
-  <span>{{ g.user.name }} · {{ 'מורה' if g.user.role == 'teacher' else 'תלמיד' }}
-    · <a href="{{ url_for('logout') }}">יציאה</a></span>
+  <div class="who">
+    <span class="avatar" aria-hidden="true">{{ g.user.name[:1] }}</span>
+    <span class="who-t"><b>{{ g.user.name }}</b><small>{{ 'מורה' if g.user.role == 'teacher' else 'תלמיד' }}</small></span>
+    <a class="top-out" href="{{ url_for('logout') }}">יציאה</a>
+  </div>
   {% endif %}
 </header>
 <main>
@@ -24,6 +63,7 @@
   {% block back %}{% endblock %}
   {% block content %}{% endblock %}
 </main>
+</div>
 <script>
 async function postJSON(url, body){
   const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body||{})});

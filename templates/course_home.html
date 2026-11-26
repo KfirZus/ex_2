@@ -1,17 +1,114 @@
 {% extends "base.html" %}
 {% block back %}<a href="{{ url_for('courses') }}">← הקורסים שלי</a>{% endblock %}
 {% block content %}
-<h1>{{ c.name }}</h1>
-<p class="muted">יום {{ c.day }} · <bdi dir="ltr">{{ c.time }}{% if c.end_time %}–{{ c.end_time }}{% endif %}</bdi></p>
-{% if g.user.role == 'teacher' %}
-  <a class="btn green" href="{{ url_for('add_people', cid=c.id) }}">הוספת אנשים לקורס</a>
-{% endif %}
-<div class="grid">
-  <a class="btn tab" href="{{ url_for('attendance', cid=c.id) }}"><span class="ic">✅</span>בדיקת נוכחות</a>
-  <a class="btn tab" href="{{ url_for('notes', cid=c.id) }}"><span class="ic">💬</span>הערות על השיעור</a>
-  <a class="btn tab" href="{{ url_for('polls', cid=c.id) }}"><span class="ic">📊</span>סקר על החומר הנלמד</a>
-  <a class="btn tab" href="{{ url_for('summaries', cid=c.id) }}"><span class="ic">🎬</span>סיכום הרצאות</a>
-  <a class="btn tab" href="{{ url_for('homework', cid=c.id) }}"><span class="ic">📝</span>בדיקת שיעורי בית</a>
-  <a class="btn tab" href="{{ url_for('more', cid=c.id) }}"><span class="ic">📌</span>הודעות ומשתתפים</a>
+{% from "_icons.html" import icon %}
+{% set teacher = g.user.role == 'teacher' %}
+{% set att, hw = st.att, st.hw %}
+<section class="hero">
+  <div class="hero-t">
+    <h1>{{ c.name }}</h1>
+    <p>יום {{ c.day }} · <bdi dir="ltr">{{ c.time }}{% if c.end_time %}–{{ c.end_time }}{% endif %}</bdi>
+      {% if teacher %} · {{ st.students }} תלמידים{% endif %}</p>
+    {% if teacher %}
+      <a class="btn hero-btn" href="{{ url_for('add_people', cid=c.id) }}">הוספת אנשים לקורס</a>
+    {% endif %}
+  </div>
+  <div class="hero-art" aria-hidden="true"><span>📚</span></div>
+</section>
+
+{# ---- headline numbers ---- #}
+<div class="kpis">
+  {% if teacher %}
+  <div class="kpi"><span class="dicon">{{ icon('attendance') }}</span><b>{{ att.avg }}%</b><small>נוכחות ממוצעת</small></div>
+  <div class="kpi"><span class="dicon">{{ icon('people') }}</span><b>{{ att.sessions }}</b><small>בדיקות נוכחות</small></div>
+  <div class="kpi"><span class="dicon">{{ icon('homework') }}</span><b>{{ hw.published }}</b><small>מטלות פורסמו · {{ hw.open }} פתוחות</small></div>
+  <div class="kpi"><span class="dicon">{{ icon('polls') }}</span><b>{{ hw.rate }}%</b><small>שיעור הגשה ({{ hw.subs }} הגשות)</small></div>
+  {% else %}
+  <div class="kpi"><span class="dicon">{{ icon('attendance') }}</span><b>{{ att.avg }}%</b><small>הנוכחות שלי</small></div>
+  <div class="kpi"><span class="dicon">{{ icon('people') }}</span><b>{{ att.attended }}/{{ att.sessions }}</b><small>בדיקות שנכחתי בהן</small></div>
+  <div class="kpi"><span class="dicon">{{ icon('homework') }}</span><b>{{ hw.submitted }}/{{ hw.published }}</b><small>מטלות שהגשתי</small></div>
+  <div class="kpi"><span class="dicon">{{ icon('polls') }}</span><b>{{ hw.open }}</b><small>מטלות פתוחות להגשה</small></div>
+  {% endif %}
+</div>
+
+<div class="dash2">
+  {# ---- attendance ---- #}
+  <section class="panel">
+    <div class="panel-h">
+      <h2>נוכחות</h2>
+      <a class="see" href="{{ url_for('attendance', cid=c.id) }}">לבדיקת נוכחות ←</a>
+    </div>
+    {% if att.sessions %}
+    <div class="att-top">
+      <div class="ring" style="--p:{{ att.avg }}" role="img" aria-label="{{ att.avg }}% נוכחות"><span>{{ att.avg }}%</span></div>
+      <p class="muted">
+        {% if teacher %}
+          {{ att.sessions }} בדיקות נוכחות הסתיימו.
+          {% if att.last %}בבדיקה האחרונה ({{ att.last.label }}) נכחו {{ att.last.note }}.{% endif %}
+        {% else %}
+          נכחת ב-{{ att.attended }} מתוך {{ att.sessions }} בדיקות{% if att.missed %}, החסרת {{ att.missed }}{% endif %}.
+        {% endif %}
+      </p>
+    </div>
+    <h3 class="sub">{{ 'אחוז נוכחות בבדיקות האחרונות' if teacher else 'הבדיקות האחרונות' }}</h3>
+    {% if teacher %}
+    <div class="bars">
+      {% for b in att.bars %}
+      <div class="bar" title="{{ b.label }}: {{ b.note }}">
+        <span class="bar-v">{{ b.value }}%</span>
+        <span class="bar-track"><span class="bar-fill" style="--h:{{ b.value }}%"></span></span>
+        <span class="bar-l">{{ b.label }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="dots">
+      {% for b in att.bars %}
+      <span class="dot {{ 'yes' if b.present else 'no' }}" title="{{ b.label }}">
+        <span aria-hidden="true">{{ '✓' if b.present else '✕' }}</span>
+        <small>{{ b.label }}</small>
+        <span class="sr">{{ 'נכח/ה' if b.present else 'לא נכח/ה' }}</span>
+      </span>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% else %}
+    <p class="empty">עדיין לא בוצעו בדיקות נוכחות בקורס.</p>
+    {% endif %}
+  </section>
+
+  {# ---- homework ---- #}
+  <section class="panel">
+    <div class="panel-h">
+      <h2>שיעורי בית</h2>
+      <a class="see" href="{{ url_for('homework', cid=c.id) }}">לכל המטלות ←</a>
+    </div>
+    {% if hw.published %}
+    <p class="muted">
+      {% if teacher %}
+        פורסמו {{ hw.published }} מטלות ({{ hw.open }} פתוחות להגשה), התקבלו {{ hw.subs }} הגשות.
+      {% else %}
+        הגשת {{ hw.submitted }} מתוך {{ hw.published }} מטלות{% if hw.late %}, {{ hw.late }} באיחור{% endif %}{% if hw.missed %}. {{ hw.missed }} לא הוגשו בזמן{% endif %}.
+      {% endif %}
+    </p>
+    {% for r in hw.rows %}
+    <a class="hw" href="{{ url_for('box', bid=r.b.id) }}">
+      <span class="hw-t"><b>{{ r.b.name }}</b><small>הגשה עד {{ r.b.due|dt }}</small></span>
+      {% if teacher %}
+        <span class="hw-p">
+          <span class="prog" role="img" aria-label="{{ r.note }} הגישו"><span style="--w:{{ r.value }}%"></span></span>
+          <small>{{ r.note }} הגישו{% if r.late %} · {{ r.late }} באיחור{% endif %}</small>
+        </span>
+        <span class="pill {{ 'open' if r.open else 'closed' }}">{{ 'פתוחה' if r.open else 'נסגרה' }}</span>
+      {% else %}
+        {% set lbl = {'done': 'הוגש', 'late': 'הוגש באיחור', 'open': 'ממתין להגשה', 'missed': 'לא הוגש'} %}
+        <span class="pill {{ r.status }}">{{ lbl[r.status] }}</span>
+      {% endif %}
+    </a>
+    {% endfor %}
+    {% else %}
+    <p class="empty">עדיין לא פורסמו מטלות בקורס.</p>
+    {% endif %}
+  </section>
 </div>
 {% endblock %}
