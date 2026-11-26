@@ -385,7 +385,63 @@ def join():
 @login_required
 def course_home(cid):
     c = course_access(cid)
-    return render_template("course_home.html", c=c)
+    return render_template("course_home.html", c=c, st=course_stats(cid))
+
+
+def pct(part, whole):
+    return round(100 * part / whole) if whole else 0
+
+
+def course_stats(cid):
+    """Attendance and homework numbers for the course dashboard (teacher: whole class,
+    student: their own). Attendance counts only checks that have ended or that the
+    student already checked into, so a check in progress doesn't count as missed."""
+    now, teacher = time.time(), is_teacher()
+    students = q("SELECT COUNT(*) n FROM enroll WHERE course_id=?", cid, one=True)["n"]
+    sessions = q("""SELECT s.id, s.started, s.ends,
+                      (SELECT COUNT(*) FROM att_records r WHERE r.session_id=s.id) cnt
+                    FROM att_sessions s WHERE course_id=? ORDER BY s.started""", cid)
+    boxes = q("""SELECT b.*, (SELECT COUNT(*) FROM submissions s WHERE s.box_id=b.id) subs,
+                   (SELECT COUNT(*) FROM submissions s WHERE s.box_id=b.id AND s.ts>b.due) late
+                 FROM boxes b WHERE course_id=? ORDER BY b.due DESC""", cid)
+    if teacher:
+        done = [s for s in sessions if s["ends"] <= now]
+        bars = [dict(label=fmt(s["started"], "%d/%m"), value=pct(s["cnt"], students),
+                     note="%d/%d" % (s["cnt"], students)) for s in done[-8:]]
+        att = dict(sessions=len(done), students=students, bars=bars,
+                   avg=pct(sum(s["cnt"] for s in done), students * len(done)),
+                   last=bars[-1] if bars else None)
+        rows = [dict(b=b, open=b["due"] > now, value=pct(b["subs"], students),
+                     note="%d/%d" % (b["subs"], students), late=b["late"]) for b in boxes[:5]]
+        hw = dict(published=len(boxes), open=sum(b["due"] > now for b in boxes),
+                  subs=sum(b["subs"] for b in boxes),
+                  rate=pct(sum(b["subs"] for b in boxes), students * len(boxes)), rows=rows)
+        return dict(att=att, hw=hw, students=students)
+    me = g.user["id"]
+    present = {r["session_id"] for r in q(
+        "SELECT r.session_id FROM att_records r JOIN att_sessions s ON s.id=r.session_id "
+        "WHERE s.course_id=? AND r.user_id=?", cid, me)}
+    counted = [s for s in sessions if s["ends"] <= now or s["id"] in present]
+    attended = sum(s["id"] in present for s in counted)
+    att = dict(sessions=len(counted), attended=attended, missed=len(counted) - attended,
+               avg=pct(attended, len(counted)),
+               bars=[dict(label=fmt(s["started"], "%d/%m"), present=s["id"] in present)
+                     for s in counted[-8:]])
+    mine = {r["box_id"]: r["ts"] for r in q(
+        "SELECT s.box_id, s.ts FROM submissions s JOIN boxes b ON b.id=s.box_id "
+        "WHERE b.course_id=? AND s.user_id=?", cid, me)}
+    rows = []
+    for b in boxes:
+        if b["id"] in mine:
+            status = "late" if mine[b["id"]] > b["due"] else "done"
+        else:
+            status = "open" if b["due"] > now else "missed"
+        rows.append(dict(b=b, status=status))
+    count = lambda k: sum(r["status"] == k for r in rows)  # noqa: E731
+    hw = dict(published=len(boxes), submitted=count("done") + count("late"), late=count("late"),
+              open=count("open"), missed=count("missed"), rows=rows[:5])
+    hw["rate"] = pct(hw["submitted"], len(boxes))
+    return dict(att=att, hw=hw, students=students)
 
 
 @app.route("/course/<int:cid>/add-people")
